@@ -1,0 +1,1228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400&display=swap" rel="stylesheet">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Videogrid</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #111;
+    width: 100vw;
+    height: 100dvh;
+    overflow: hidden;
+    font-family: 'Roboto', Helvetica, Arial, sans-serif;
+    touch-action: manipulation;
+  }
+
+  /* ── Permission screen ── */
+  #permission-screen {
+    position: fixed;
+    inset: 0;
+    background: #111;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    gap: 24px;
+    padding: 40px;
+  }
+
+  #intro-byline {
+    color: #fff;
+    opacity: 0.6;
+    font-size: 0.8rem;
+    font-weight: 300;
+    letter-spacing: 0.15em;
+    margin: 0 0 16px;
+    text-align: center;
+  }
+  #permission-screen h1 {
+    color: #fff;
+    font-size: clamp(1.4rem, 5vw, 2.2rem);
+    font-weight: 200;
+    letter-spacing: 0.25em;
+    text-align: center;
+    margin: 0 0 2px;
+  }
+
+  #permission-screen p {
+    color: #888;
+    font-size: clamp(0.85rem, 2.5vw, 1rem);
+    text-align: center;
+    max-width: 340px;
+    line-height: 1.6;
+    font-weight: 300;
+  }
+
+  #start-btn {
+    background: none;
+    border: 1px solid #fff;
+    color: #fff;
+    padding: 14px 40px;
+    font-size: 0.85rem;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    transition: background 0.2s, color 0.2s;
+    font-weight: 300;
+  }
+  #start-btn:hover { background: #fff; color: #111; }
+
+  #denied-msg {
+    display: none;
+    color: #e55;
+    font-size: 0.9rem;
+    text-align: center;
+    max-width: 300px;
+    line-height: 1.6;
+  }
+
+  /* ── Grid ── */
+  #grid-container {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0; /* btn-bar height subtracted in sizeGrid */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #000;
+    visibility: hidden;
+  }
+  #grid-container.active {
+    visibility: visible;
+  }
+
+  #grid {
+    display: grid;
+    gap: 0;
+    flex-shrink: 0;
+  }
+
+  /* Desktop/landscape: 5×5 — fit inside viewport preserving 4:3 per cell
+     Total grid ratio = (5 * 4) : (5 * 3) = 20:15 = 4:3 exactly
+     So the whole grid is also 4:3 — constrain by whichever dimension is tighter */
+  .layout-5x5 {
+    grid-template-columns: repeat(5, 1fr);
+    grid-template-rows: repeat(5, 1fr);
+  }
+
+  /* Mobile portrait: 3×6 */
+  .layout-3x6 {
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(6, 1fr);
+  }
+
+  /* ── Cell ── */
+  .cell {
+    position: relative;
+    overflow: hidden;
+    cursor: pointer;
+    background: #fff;
+    border: none;
+  }
+
+  /* White vignette on empty cells */
+  .cell::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse at center, transparent 50%, rgba(0,0,0,0.12) 100%);
+    pointer-events: none;
+    z-index: 2;
+    transition: opacity 0.3s;
+  }
+
+  .cell.has-video::after {
+    opacity: 0.15;
+  }
+
+  .cell video {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  /* Live preview during countdown */
+  .cell .live-feed {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    /* mirror applied via .mirror class when front camera active */
+    z-index: 5;
+  }
+  .live-feed.mirror, .recorded.mirror {
+    transform: scaleX(-1);
+  }
+
+  /* Countdown overlay */
+  .cell .countdown {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+    pointer-events: none;
+  }
+
+  .cell .countdown-number {
+    color: #fff;
+    font-size: clamp(1.2rem, 5vw, 2.5rem);
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    opacity: 0;
+    transform: scale(1.4);
+    transition: opacity 0.08s, transform 0.08s;
+  }
+
+  .cell .countdown-number.show {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  /* REC — text in centre of cell, same position as countdown */
+  .cell .rec-indicator {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.1s;
+  }
+  .cell .rec-indicator.show { opacity: 1; }
+  .cell .rec-text {
+    color: #fff;
+    font-size: clamp(1.2rem, 5vw, 2.5rem);
+    font-weight: 700;
+    letter-spacing: 0.05em;
+  }
+
+  /* Hover highlight on idle cells */
+  .cell.idle:hover::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: rgba(255,255,255,0.08);
+    z-index: 3;
+    pointer-events: none;
+  }
+
+  /* title watermark */
+  #title-mark {
+    position: fixed;
+    top: calc(14px + env(safe-area-inset-top, 0px));
+    right: 14px;
+    color: #fff;
+    font-size: 0.75rem;
+    letter-spacing: 0.2em;
+    z-index: 110;
+    pointer-events: none;
+    font-weight: 300;
+  }
+  #title-mark #about-trigger {
+    pointer-events: auto;
+    cursor: pointer;
+    color: #fff;
+    text-decoration: none;
+    transition: opacity 0.2s;
+  }
+  #title-mark #about-trigger:hover { opacity: 0.7; }
+  #title-mark .watermark-text {
+    opacity: 0.35;
+  }
+
+  /* About overlay */
+  #about-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    background: rgba(0,0,0,0.93);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.35s ease;
+    padding: 24px 24px calc(24px + env(safe-area-inset-bottom, 0px));
+    box-sizing: border-box;
+    overflow: hidden;
+  }
+  #about-overlay.visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  #about-panel {
+    width: 100%;
+    max-width: 420px;
+    height: 100%;
+    color: #fff;
+    font-family: inherit;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    overflow: hidden;
+  }
+  #about-text-block {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  #about-title {
+    font-size: 1rem;
+    letter-spacing: 0.1em;
+    font-weight: 400;
+    margin: 0;
+  }
+  #about-title span {
+    opacity: 0.5;
+    font-weight: 300;
+  }
+  #about-body {
+    font-size: 1rem;
+    line-height: 1.65;
+    font-weight: 300;
+    opacity: 0.85;
+    margin: 0;
+  }
+  #about-link {
+    color: #fff;
+    opacity: 0.6;
+    font-size: 0.8rem;
+    letter-spacing: 0.05em;
+    text-decoration: none;
+    border-bottom: 1px solid rgba(255,255,255,0.3);
+    transition: opacity 0.2s;
+  }
+  #about-link:hover { opacity: 1; }
+  #about-close {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    background: transparent;
+    border: none;
+    color: #fff;
+    font-size: 1.4rem;
+    line-height: 1;
+    cursor: pointer;
+    font-family: inherit;
+    opacity: 0.6;
+    transition: opacity 0.2s;
+    -webkit-tap-highlight-color: transparent;
+    padding: 4px 8px;
+    z-index: 201;
+  }
+  #about-close:hover { opacity: 1; }
+  #about-img {
+    flex-shrink: 0;
+    width: 50%;
+    max-height: 35vh;
+    object-fit: contain;
+    object-position: left center;
+    display: block;
+  }
+
+  /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     SHARE FEATURE — remove this CSS block to disable
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+  #btn-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 50;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 10px 16px;
+    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    background: #000;
+  }
+  #btn-bar-inner {
+    position: relative;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #btn-bar.active {
+    display: flex;
+  }
+  #btn-bar.active #btn-bar-inner {
+    display: flex;
+  }
+
+  #share-btn {
+    background: rgba(0,0,0,0.55);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.35);
+    padding: 9px 22px;
+    font-size: 0.75rem;
+    letter-spacing: 0.18em;
+    font-family: 'Roboto', Helvetica, Arial, sans-serif;
+    font-weight: 400;
+    cursor: pointer;
+    border-radius: 2px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    transition: background 0.2s, opacity 0.2s;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  #share-btn:hover { background: rgba(0,0,0,0.8); }
+  #share-btn:disabled { opacity: 0.4; cursor: default; }
+
+  @keyframes sheen {
+    0%   { background-position: -200% center; }
+    100% { background-position: 200% center; }
+  }
+  #share-btn.ready {
+    background: rgba(0,0,0,0.7);
+    border-color: rgba(255,255,255,0.7);
+    background-image: linear-gradient(
+      105deg,
+      transparent 40%,
+      rgba(255,255,255,0.35) 50%,
+      transparent 60%
+    );
+    background-size: 200% auto;
+    animation: sheen 1.6s linear infinite;
+  }
+
+  #flip-btn {
+    position: absolute;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: transparent !important;
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+    color: #fff;
+    border: none;
+    padding: 8px;
+    cursor: pointer;
+    line-height: 0;
+    transition: opacity 0.2s;
+    -webkit-tap-highlight-color: transparent;
+    outline: none;
+  }
+  #flip-btn:hover, #flip-btn:active, #flip-btn:focus { background: transparent !important; outline: none; -webkit-tap-highlight-color: transparent; }
+  #flip-btn:disabled { opacity: 0.4; cursor: default; }
+
+  #share-progress {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    height: 3px;
+    width: 0%;
+    background: #fff;
+    z-index: 51;
+    transition: width 0.1s linear;
+    display: none;
+  }
+  /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     END SHARE FEATURE CSS
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+</style>
+</head>
+<body>
+
+<!-- Permission screen -->
+<div id="permission-screen">
+  <h1>Videogrid (2026)</h1>
+  <p id="intro-byline">by Ross Phillips</p>
+  <p>Tap any square to record a one-second loop. Each square replays forever until recorded over.</p>
+  <button id="start-btn">Allow Camera & Begin</button>
+  <p id="denied-msg">Camera access is required to use Videogrid. Please allow camera permissions and reload the page.</p>
+
+</div>
+
+<!-- Grid -->
+<div id="grid-container">
+  <div id="grid"></div>
+</div>
+
+<div id="title-mark"><span class="watermark-text">Videogrid &nbsp;·&nbsp; Beta v0.73 &nbsp;·&nbsp; </span><span id="about-trigger">About</span></div>
+
+  <div id="about-overlay">
+    <button id="about-close">&#x2715;</button>
+    <div id="about-panel">
+      <div id="about-text-block">
+        <p id="about-title">Videogrid &nbsp;<span>by Ross Phillips</span></p>
+        <p id="about-body">Videogrid has been shown all over the world including the V&amp;A London, Garage Moscow, MOMI New York and won recognition at Ars Electronica Austria and Designs of the Year London.<br><br>An interactive video installation, Videogrid consists of a grid of squares which can each record a one second loop of film. Participants are free to create giant composite moving portraits, simple narratives, group artworks or simply a collage of moving snapshots. The grid starts empty at the beginning of the installation and becomes a constantly changing collaborative artwork that showcases the creativity of visitors through the space.<br><br><a id="about-link" href="https://www.rossphillips.me/work/videogrid" target="_blank">rossphillips.me/work/videogrid</a></p>
+      </div>
+      <img id="about-img" src="data:image/webp;base64,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" alt="Videogrid installation">
+    </div>
+  </div>
+
+<!-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     SHARE FEATURE — remove this HTML block to disable
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+<div id="btn-bar">
+  <div id="btn-bar-inner">
+    <button id="share-btn">Share grid</button>
+    <button id="flip-btn" aria-label="Flip camera"></button>
+  </div>
+</div>
+<div id="share-progress"></div>
+<!-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     END SHARE FEATURE HTML
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+
+<script>
+(function() {
+  // ── Platform ──
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+
+  // ── State ──
+  let stream = null;
+  let currentFacing = 'user'; // 'user' = front, 'environment' = back
+  let activeCountdown = null; // { index, liveFeed, abort } — set during countdown phase only
+  let isRecording = false;
+  const COLS_DESKTOP = 5, ROWS_DESKTOP = 5;
+  const COLS_MOBILE  = 3, ROWS_MOBILE  = 6;
+  let currentCols, currentRows, totalCells;
+
+  // ── Audio ──
+  // iOS Safari suspends AudioContext aggressively — even when created inside a
+  // user gesture, and again after screen lock. Always resume() before scheduling
+  // any audio, which is a no-op on platforms that don't need it.
+  let audioCtx = null;
+  function getAudioCtx() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    return audioCtx;
+  }
+  function beep(freq = 880, duration = 0.07) {
+    const ctx = getAudioCtx();
+    const doBeep = () => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.18, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + duration);
+    };
+    // resume() is a no-op if already running; resolves immediately on non-iOS
+    if (ctx.state === 'suspended') {
+      ctx.resume().then(doBeep).catch(() => {});
+    } else {
+      doBeep();
+    }
+  }
+  const BEEP_FREQS = [520, 660, 880]; // 3, 2, 1
+
+  // ── Layout ──
+  function isMobilePortrait() {
+    return window.innerWidth < window.innerHeight && window.innerWidth < 600;
+  }
+
+  function buildGrid() {
+    const grid = document.getElementById('grid');
+    const container = document.getElementById('grid-container');
+    const mobile = isMobilePortrait();
+    currentCols = mobile ? COLS_MOBILE  : COLS_DESKTOP;
+    currentRows = mobile ? ROWS_MOBILE  : ROWS_DESKTOP;
+    totalCells  = currentCols * currentRows;
+
+    grid.className = mobile ? 'layout-3x6' : 'layout-5x5';
+
+    if (grid.children.length === 0) {
+      for (let i = 0; i < COLS_DESKTOP * ROWS_DESKTOP; i++) {
+        const cell = document.createElement('div');
+        cell.className = 'cell idle';
+        cell.dataset.index = i;
+
+        const countdownDiv = document.createElement('div');
+        countdownDiv.className = 'countdown';
+        const numSpan = document.createElement('span');
+        numSpan.className = 'countdown-number';
+        countdownDiv.appendChild(numSpan);
+        cell.appendChild(countdownDiv);
+
+        const rec = document.createElement('div');
+        rec.className = 'rec-indicator';
+        rec.innerHTML = '<span class="rec-text">REC</span>';
+        cell.appendChild(rec);
+
+        cell.addEventListener('click', () => onCellClick(i));
+        cell.addEventListener('touchend', (e) => { e.preventDefault(); onCellClick(i); });
+        grid.appendChild(cell);
+      }
+    }
+
+    document.querySelectorAll('.cell').forEach(cell => {
+      cell.style.display = parseInt(cell.dataset.index) < totalCells ? '' : 'none';
+    });
+
+    container.classList.add('active');
+    document.getElementById('btn-bar').classList.add('active');
+    // Force reflow so getBoundingClientRect returns real bar height
+    void document.getElementById('btn-bar').offsetHeight;
+    sizeGrid(grid, currentCols, currentRows);
+  }
+
+  function sizeGrid(grid, cols, rows) {
+    const vw = window.visualViewport ? window.visualViewport.width  : window.innerWidth;
+    const fullVh = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+    const bar = document.getElementById('btn-bar');
+    const barH = bar ? bar.getBoundingClientRect().height : 0;
+    const mark = document.getElementById('title-mark');
+    const topH = mark ? Math.ceil(mark.getBoundingClientRect().bottom) + 8 : 0;
+    const vh = fullVh - barH - topH; // reserve space for btn-bar and watermark
+    // Constrain container so centred grid can't drift into the bar or watermark
+    const container = document.getElementById('grid-container');
+    if (container) {
+      container.style.top    = topH + 'px';
+      container.style.bottom = barH + 'px';
+    }
+    const dpr = isIOS ? (window.devicePixelRatio || 1) : 1;
+    const snap = v => Math.floor(v * dpr) / dpr;
+    const cellW = snap(Math.min(vw / cols, vh / (rows * 0.75)));
+    const cellH = snap(cellW * 0.75);
+    grid.style.width  = (cellW * cols) + 'px';
+    grid.style.height = (cellH * rows) + 'px';
+    grid.style.gridTemplateColumns = `repeat(${cols}, ${cellW}px)`;
+    grid.style.gridTemplateRows    = `repeat(${rows}, ${cellH}px)`;
+  }
+
+  function getCell(index) {
+    return document.querySelector(`.cell[data-index="${index}"]`);
+  }
+
+  // ── In-page toast — replaces alert() ──
+  function showToast(msg) {
+    let toast = document.getElementById('vg-toast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'vg-toast';
+      toast.style.cssText = 'position:fixed;bottom:60px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.75);color:#fff;padding:10px 20px;border-radius:3px;font-size:0.8rem;letter-spacing:0.1em;z-index:200;pointer-events:none;transition:opacity 0.4s;white-space:nowrap;font-family:Roboto,Helvetica,Arial,sans-serif;';
+      document.body.appendChild(toast);
+    }
+    toast.textContent = msg;
+    toast.style.opacity = '1';
+    clearTimeout(toast._timer);
+    toast._timer = setTimeout(() => { toast.style.opacity = '0'; }, 2500);
+  }
+
+  // ── Permission & Start ──
+  document.getElementById('start-btn').addEventListener('click', async () => {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: currentFacing, width: { ideal: 320 }, height: { ideal: 240 } },
+        audio: false
+      });
+      document.getElementById('permission-screen').style.display = 'none';
+      buildGrid();
+      // Show flip button on mobile if device has more than one camera
+      const isMobile = /android|iphone|ipad|ipod/i.test(navigator.userAgent);
+      if (isMobile && navigator.mediaDevices.enumerateDevices) {
+        navigator.mediaDevices.enumerateDevices().then(devices => {
+          const cameras = devices.filter(d => d.kind === 'videoinput');
+          if (cameras.length > 1) {
+            const fb = document.getElementById('flip-btn');
+            fb.style.display = 'flex';
+            updateFlipLabel();
+          }
+        });
+      }
+    } catch (err) {
+      document.getElementById('start-btn').style.display = 'none';
+      document.getElementById('denied-msg').style.display = 'block';
+    }
+  });
+
+  // ── Stream health check ──
+  // After returning from share sheet, Safari/Chrome may have ended the camera
+  // track. Re-acquire the stream silently before allowing recording to proceed.
+  async function ensureStream() {
+    if (!stream) return false;
+    const tracks = stream.getVideoTracks();
+    if (tracks.length === 0 || tracks[0].readyState === 'ended') {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: currentFacing, width: { ideal: 320 }, height: { ideal: 240 } },
+          audio: false
+        });
+        return true;
+      } catch(e) {
+        showToast('Camera unavailable — please reload');
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // ── Cell click ──
+  async function onCellClick(index) {
+    if (isRecording) return;
+    const ok = await ensureStream();
+    if (!ok) return;
+    startCountdown(index);
+  }
+
+  // ── Countdown & Record ──
+  function startCountdown(index) {
+    isRecording = true;
+    const cell = getCell(index);
+    cell.classList.remove('idle');
+
+    const liveFeed = document.createElement('video');
+    liveFeed.className = currentFacing === 'user' ? 'live-feed mirror' : 'live-feed';
+    liveFeed.autoplay = true;
+    liveFeed.muted = true;
+    liveFeed.playsInline = true;
+    liveFeed.setAttribute('webkit-playsinline', ''); // older iOS Safari
+    liveFeed.srcObject = stream;
+    cell.prepend(liveFeed);
+
+    const existingVids = [...cell.querySelectorAll('video.recorded')];
+    const numSpan = cell.querySelector('.countdown-number');
+    const steps = [3, 2, 1];
+    let step = 0;
+    let countdownStarted = false;
+    let aborted = false;
+
+    // Register so flip can abort and restart this countdown
+    activeCountdown = {
+      index,
+      liveFeed,
+      abort() {
+        aborted = true;
+        numSpan.classList.remove('show');
+        numSpan.textContent = '';
+        liveFeed.srcObject = null;
+        liveFeed.remove();
+        cell.classList.add('idle');
+        isRecording = false;
+        activeCountdown = null;
+      }
+    };
+
+    function showNumber() {
+      if (countdownStarted) return;
+      countdownStarted = true;
+
+      function tick() {
+        if (aborted) return;
+        if (step >= steps.length) {
+          numSpan.classList.remove('show');
+          activeCountdown = null; // recording phase — no longer abortable
+          startRecording(index, liveFeed, existingVids);
+          return;
+        }
+        numSpan.textContent = steps[step];
+        numSpan.classList.add('show');
+        beep(BEEP_FREQS[step], 0.07);
+        setTimeout(() => {
+          if (aborted) return;
+          numSpan.classList.remove('show');
+          setTimeout(() => { if (!aborted) { step++; tick(); } }, 200);
+        }, 700);
+      }
+      tick();
+    }
+
+    // Wait for live feed to be producing frames before starting countdown
+    if (liveFeed.readyState >= 3) {
+      showNumber();
+    } else {
+      liveFeed.addEventListener('playing', showNumber, { once: true });
+      // Safety fallback — if playing never fires within 3s, start anyway
+      setTimeout(() => showNumber(), 3000);
+    }
+  }
+
+  function startRecording(index, liveFeed, existingVids) {
+    const cell = getCell(index);
+    const rec = cell.querySelector('.rec-indicator');
+    rec.classList.add('show');
+    beep(1100, 0.06);
+
+    const chunks = [];
+    let recorder;
+    try {
+      recorder = new MediaRecorder(stream, { mimeType: getSupportedMimeType(/android/i.test(navigator.userAgent)), videoBitsPerSecond: 500000 });
+    } catch(e) {
+      recorder = new MediaRecorder(stream);
+    }
+
+    recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+    recorder.onstop = () => {
+      const blob = new Blob(chunks, { type: recorder.mimeType });
+      const url  = URL.createObjectURL(blob);
+      finishRecording(index, url, liveFeed, existingVids);
+    };
+    recorder.onerror = () => {
+      // Ensure app never locks up if recorder fails
+      rec.classList.remove('show');
+      liveFeed.srcObject = null;
+      liveFeed.remove();
+      cell.classList.add('idle');
+      isRecording = false;
+    };
+    recorder.start();
+    setTimeout(() => {
+      if (recorder.state === 'recording') recorder.stop();
+    }, 1000);
+  }
+
+  // ── Cell state ──
+  // Keyed by cell index. Avoids hanging arbitrary properties off DOM nodes.
+  // Each entry: { active, next, switching, bufferUrl }
+  const cellStates = new Map();
+
+  // ── Global loop ticker ──
+  // One single rAF loop checks all active cells every frame.
+  // Far cheaper than 25 separate rAF callbacks at 60fps.
+  function globalLoopTick() {
+    cellStates.forEach((state) => {
+      const { active, next } = state;
+      if (!active || !active.duration || state.switching) return;
+      const remaining = active.duration - active.currentTime;
+      if (remaining < 0.08) {
+        state.switching = true;
+        next.currentTime = 0;
+        next.play().then(() => {
+          next.style.opacity = '1';
+          active.style.opacity = '0';
+          state.active = next;
+          state.next   = active;
+          state.next.pause();
+          state.switching = false;
+        }).catch(() => { state.switching = false; });
+      }
+    });
+    requestAnimationFrame(globalLoopTick);
+  }
+  requestAnimationFrame(globalLoopTick);
+
+  // ── About overlay ──
+  const aboutOverlay = document.getElementById('about-overlay');
+  document.getElementById('about-trigger').addEventListener('click', () => {
+    aboutOverlay.classList.add('visible');
+  });
+  document.getElementById('about-close').addEventListener('click', () => {
+    aboutOverlay.classList.remove('visible');
+  });
+  aboutOverlay.addEventListener('click', (e) => {
+    if (e.target === aboutOverlay) aboutOverlay.classList.remove('visible');
+  });
+
+  // ── Page resume handlers ──
+  // iOS Safari suspends the page (and kills the rAF loop) when the share sheet
+  // is open or the app is backgrounded. Restart the loop and re-acquire the
+  // camera when the page becomes visible again.
+  function onPageResume() {
+    // Restart rAF loop — safe to call multiple times, each queues one frame
+    requestAnimationFrame(globalLoopTick);
+    // Re-acquire camera silently if track ended during suspension
+    if (stream) ensureStream();
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') onPageResume();
+  });
+  window.addEventListener('pageshow', (e) => {
+    // pageshow fires on bfcache restore (back/forward nav) — persisted=true
+    if (e.persisted) onPageResume();
+  });
+
+  function getSupportedMimeType(forceWebm) {
+    // Android Chrome may report mp4 as supported but fails at runtime — force webm.
+    // iOS Safari needs mp4 for share sheet compatibility.
+    // avc1.42E01E = H.264 Baseline Profile Level 3.0 — required for Photos "Save Video".
+    const types = forceWebm
+      ? ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
+      : ['video/mp4;codecs=avc1.42E01E', 'video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+    for (const t of types) {
+      if (MediaRecorder.isTypeSupported(t)) return t;
+    }
+    return '';
+  }
+
+  function finishRecording(index, url, liveFeed, existingVids) {
+    const cell = getCell(index);
+    const rec  = cell.querySelector('.rec-indicator');
+    rec.classList.remove('show');
+
+    liveFeed.srcObject = null;
+    liveFeed.remove();
+
+    // Revoke old blob URL if re-recording over an existing cell
+    const existing = cellStates.get(index);
+    if (existing) {
+      URL.revokeObjectURL(existing.bufferUrl);
+    }
+    existingVids.forEach(v => { v.src = ''; v.remove(); });
+
+    const facingAtRecord = currentFacing;
+    // ── Double-buffer seamless loop ──
+    // Two videos share the same blob URL and alternate to eliminate loop gap.
+    // The global rAF ticker handles the switching — no per-cell rAF needed.
+    function makeVid() {
+      const v = document.createElement('video');
+      v.className = 'recorded';
+      v.src = url;
+      v.muted = true;
+      v.playsInline = true;
+      v.setAttribute('webkit-playsinline', ''); // older iOS Safari
+      if (facingAtRecord === 'user') v.classList.add('mirror');
+      return v;
+    }
+
+    const vidA = makeVid();
+    const vidB = makeVid();
+    vidB.style.opacity = '0';
+
+    cell.prepend(vidB);
+    cell.prepend(vidA);
+    cell.classList.add('has-video', 'idle');
+
+    // Register state in the global map — the loop ticker picks it up automatically
+    cellStates.set(index, {
+      active:    vidA,
+      next:      vidB,
+      switching: false,
+      bufferUrl: url,
+      facing:    facingAtRecord,
+      // Keep refs for share feature canvas drawing
+      get bufferA() { return this.active; },
+      get bufferB() { return this.next;   }
+    });
+
+    vidA.play().catch(() => {});
+
+    isRecording = false;
+  }
+
+  // ── Resize ──
+  let lastMobile = null;
+  let resizeTimer;
+
+  function handleResize() {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      const mobile = isMobilePortrait();
+      const grid = document.getElementById('grid');
+      if (mobile !== lastMobile) {
+        lastMobile = mobile;
+        currentCols = mobile ? COLS_MOBILE : COLS_DESKTOP;
+        currentRows = mobile ? ROWS_MOBILE : ROWS_DESKTOP;
+        totalCells  = currentCols * currentRows;
+        grid.className = mobile ? 'layout-3x6' : 'layout-5x5';
+        document.querySelectorAll('.cell').forEach(cell => {
+          cell.style.display = parseInt(cell.dataset.index) < totalCells ? '' : 'none';
+        });
+      }
+      sizeGrid(grid, currentCols, currentRows);
+    }, 150);
+  }
+
+  window.addEventListener('resize', handleResize);
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', handleResize);
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // ── Camera flip ──
+  const ICON_FRONT = `<svg width="32" height="32" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M10.58 3.60 A10 10 0 1 1 5.34 8.00" stroke="white" stroke-width="1.8" stroke-linecap="round" fill="none"/>
+  <polyline points="3.58,8.14 5.34,8.00 6.30,9.41" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <rect x="9" y="9.5" width="10" height="7" rx="1.3" fill="white"/>
+  <path d="M11.5 9.5v-1a0.8 0.8 0 0 1 0.8-0.8h3.4a0.8 0.8 0 0 1 0.8 0.8v1" fill="white"/>
+  <circle cx="14" cy="13" r="2.1" fill="#1a1a1a"/>
+  <circle cx="14" cy="13" r="0.9" fill="white"/>
+</svg>`;
+  const ICON_BACK  = `<svg width="32" height="32" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M10.58 3.60 A10 10 0 1 1 5.34 8.00" stroke="white" stroke-width="1.8" stroke-linecap="round" fill="none"/>
+  <polyline points="3.58,8.14 5.34,8.00 6.30,9.41" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <rect x="9" y="9.5" width="10" height="7" rx="1.3" stroke="white" stroke-width="1.6" fill="none"/>
+  <path d="M11.5 9.5v-1a0.8 0.8 0 0 1 0.8-0.8h3.4a0.8 0.8 0 0 1 0.8 0.8v1" stroke="white" stroke-width="1.4" stroke-linejoin="round" fill="none"/>
+  <circle cx="14" cy="13" r="2.1" stroke="white" stroke-width="1.6" fill="none"/>
+</svg>`;
+
+  function updateFlipLabel() {
+    const flipBtn = document.getElementById('flip-btn');
+    if (flipBtn) flipBtn.innerHTML = currentFacing === 'user' ? ICON_FRONT : ICON_BACK;
+  }
+
+  document.getElementById('flip-btn').addEventListener('click', async () => {
+    const flipBtn = document.getElementById('flip-btn');
+    // Capture any active countdown before aborting it
+    const pendingCountdown = activeCountdown ? { index: activeCountdown.index } : null;
+    if (activeCountdown) activeCountdown.abort();
+
+    flipBtn.disabled = true;
+    currentFacing = currentFacing === 'user' ? 'environment' : 'user';
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: currentFacing, width: { ideal: 320 }, height: { ideal: 240 } },
+        audio: false
+      });
+    } catch(e) {
+      // Roll back if new camera unavailable
+      currentFacing = currentFacing === 'user' ? 'environment' : 'user';
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: currentFacing, width: { ideal: 320 }, height: { ideal: 240 } },
+          audio: false
+        });
+      } catch(e2) {
+        showToast('Camera unavailable — please reload');
+        flipBtn.disabled = false;
+        return;
+      }
+    }
+    updateFlipLabel();
+    flipBtn.disabled = false;
+    // Restart countdown on the same cell if flip happened during countdown
+    if (pendingCountdown) {
+      setTimeout(() => startCountdown(pendingCountdown.index), 100);
+    }
+  });
+
+  // SHARE FEATURE — remove this JS block to disable
+  // Composites all visible cell videos onto a canvas,
+  // records 10 seconds, then triggers native share sheet.
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  const SHARE_DURATION_MS = 10000;
+
+  document.getElementById('share-btn').addEventListener('click', async () => {
+    const btn = document.getElementById('share-btn');
+    const progressBar = document.getElementById('share-progress');
+
+    // ── Pending share: user tapped "Tap to Share" (iOS and others) ──
+    if (btn._pendingShare) {
+      const { file, blobUrl, ext, ts } = btn._pendingShare;
+      btn._pendingShare = null;
+      btn.classList.remove('ready');
+      btn.textContent = 'Share grid';
+
+      if (navigator.share) {
+        try {
+          await navigator.share({ files: [file] });
+          URL.revokeObjectURL(blobUrl);
+          return;
+        } catch(err) {
+          if (err.name === 'AbortError') { URL.revokeObjectURL(blobUrl); return; }
+        }
+      }
+
+      // Fallback — share API unavailable or failed
+      triggerDownload(blobUrl, ext, ts);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+      return;
+    }
+
+    const cells = [...document.querySelectorAll('.cell')]
+      .filter(c => c.style.display !== 'none');
+
+    if (!cells.some(c => cellStates.has(parseInt(c.dataset.index)))) {
+      showToast('Record some clips first');
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Preparing…';
+
+    const firstCell = document.querySelector('.cell[data-index="0"]');
+    const cellRect  = firstCell.getBoundingClientRect();
+    // iOS gets 1280px wide export for quality (mp4 encoder handles it well).
+    // Android uses 640px — Chrome's MediaRecorder struggles with large canvas capture.
+    const isAndroid = /android/i.test(navigator.userAgent);
+    const exportWidth = isAndroid ? 800 : 1280;
+    const exportCellW = Math.round(exportWidth / currentCols);
+    const exportCellH = Math.round(exportCellW * (cellRect.height / cellRect.width));
+    const cellW = exportCellW;
+    const cellH = exportCellH;
+    const canvas = document.createElement('canvas');
+    canvas.width  = cellW * currentCols;
+    canvas.height = cellH * currentRows;
+    const ctx = canvas.getContext('2d');
+
+    const now = new Date();
+    const ts  = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}-${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}${String(now.getSeconds()).padStart(2,'0')}`;
+
+    let rafId;
+    let startTime = null;
+
+    function drawFrame(timestamp) {
+      if (!startTime) startTime = timestamp;
+      const elapsed = timestamp - startTime;
+      progressBar.style.width = Math.min((elapsed / SHARE_DURATION_MS) * 100, 100) + '%';
+
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      cells.forEach((cell, i) => {
+        const col = i % currentCols;
+        const row = Math.floor(i / currentCols);
+        const x = col * cellW;
+        const y = row * cellH;
+        const state = cellStates.get(parseInt(cell.dataset.index));
+        const vid = state ? state.active : null;
+
+        if (vid && vid.readyState >= 2) {
+          const vw = vid.videoWidth  || cellW;
+          const vh = vid.videoHeight || cellH;
+          const scale = Math.max(cellW / vw, cellH / vh);
+          const sw = cellW / scale;
+          const sh = cellH / scale;
+          const sx = (vw - sw) / 2;
+          const sy = (vh - sh) / 2;
+          ctx.save();
+          if (state.facing === 'user') {
+            ctx.translate(x + cellW, y);
+            ctx.scale(-1, 1);
+          } else {
+            ctx.translate(x, y);
+          }
+          ctx.drawImage(vid, sx, sy, sw, sh, 0, 0, cellW, cellH);
+          ctx.restore();
+        } else {
+          ctx.fillStyle = '#fff';
+          ctx.fillRect(x, y, cellW, cellH);
+          const grad = ctx.createRadialGradient(
+            x + cellW/2, y + cellH/2, cellW * 0.25,
+            x + cellW/2, y + cellH/2, cellW * 0.7
+          );
+          grad.addColorStop(0, 'rgba(0,0,0,0)');
+          grad.addColorStop(1, 'rgba(0,0,0,0.12)');
+          ctx.fillStyle = grad;
+          ctx.fillRect(x, y, cellW, cellH);
+        }
+      });
+
+      if (elapsed < SHARE_DURATION_MS) rafId = requestAnimationFrame(drawFrame);
+    }
+
+    const filePromise = new Promise((resolve, reject) => {
+      const canvasStream = canvas.captureStream(15);
+      let shareRecorder;
+      const shareMimeType = getSupportedMimeType(isAndroid);
+      try {
+        shareRecorder = new MediaRecorder(canvasStream, { mimeType: shareMimeType, videoBitsPerSecond: isAndroid ? 2000000 : 2500000 });
+      } catch(e) {
+        // If explicit mimeType constructor fails, try without bitrate constraint but keep mimeType
+        try {
+          shareRecorder = new MediaRecorder(canvasStream, { mimeType: shareMimeType });
+        } catch(e2) {
+          shareRecorder = new MediaRecorder(canvasStream);
+        }
+      }
+
+      const shareChunks = [];
+      shareRecorder.ondataavailable = e => { if (e.data.size > 0) shareChunks.push(e.data); };
+      shareRecorder.onstop = () => {
+        cancelAnimationFrame(rafId);
+        // Release canvas resources
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        progressBar.style.display = 'none';
+        progressBar.style.width = '0%';
+        btn.textContent = 'Share grid';
+        btn.disabled = false;
+        const blob = new Blob(shareChunks, { type: shareRecorder.mimeType });
+        const ext  = shareRecorder.mimeType.includes('mp4') ? 'mp4' : 'webm';
+        resolve(new File([blob], `videogrid-${ts}.${ext}`, { type: shareRecorder.mimeType }));
+      };
+      shareRecorder.onerror = (e) => {
+        // Restore UI before rejecting so the button is never permanently stuck
+        cancelAnimationFrame(rafId);
+        progressBar.style.display = 'none';
+        progressBar.style.width = '0%';
+        btn.textContent = 'Share grid';
+        btn.disabled = false;
+        reject(e);
+      };
+
+      progressBar.style.display = 'block';
+      // Draw one frame immediately so the recorder's first frame is the grid,
+      // not black. Then start the recorder after a short delay.
+      rafId = requestAnimationFrame(drawFrame);
+      setTimeout(() => {
+        shareRecorder.start();
+        setTimeout(() => shareRecorder.stop(), SHARE_DURATION_MS);
+      }, 200);
+    });
+
+    // Share strategy:
+    // We can't call navigator.share() after a 10s await — the user gesture expires.
+    // Solution: record first, then show a "Tap to Share" button that triggers share
+    // within a fresh user gesture. This is the only reliable cross-browser approach.
+    let file;
+    try {
+      file = await filePromise;
+    } catch(e) {
+      showToast('Could not prepare video — please try again');
+      return;
+    }
+
+    // Detect whether this device can meaningfully share a video file.
+    // Android Chrome reports navigator.share but rejects video files silently
+    // because webm has no share targets. Detect Android and use download instead.
+    // (isAndroid already declared above for canvas sizing)
+
+    const blobUrl = URL.createObjectURL(file);
+    const ext = file.name.endsWith('mp4') ? 'mp4' : 'webm';
+
+    if (isAndroid) {
+      // Android: download directly and tell user what to do
+      triggerDownload(blobUrl, ext, ts);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+      showToast('Saved to downloads — share from your gallery');
+      btn.textContent = 'Share grid';
+      btn.disabled = false;
+    } else if (navigator.share) {
+      // iOS and other platforms with working share API: two-step gesture flow
+      btn.textContent = 'Tap to share';
+      btn.disabled = false;
+      btn.classList.add('ready');
+      btn._pendingShare = { file, blobUrl, ext, ts };
+      // Haptic pulse to signal the button is ready
+      if (navigator.vibrate) navigator.vibrate(200);
+    } else {
+      // Desktop or no share API: plain download
+      triggerDownload(blobUrl, ext, ts);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+      btn.textContent = 'Share grid';
+      btn.disabled = false;
+    }
+  });
+
+  function triggerDownload(blobUrl, ext, ts) {
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = `videogrid-${ts}.${ext}`;
+    a.click();
+  }
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // END SHARE FEATURE JS
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+})();
+</script>
+</body>
+</html>
