@@ -463,7 +463,7 @@
   <div id="grid"></div>
 </div>
 
-<div id="title-mark"><span class="watermark-text">Videogrid &nbsp;·&nbsp; Beta v0.77 &nbsp;·&nbsp; </span><span id="about-trigger">About</span></div>
+<div id="title-mark"><span class="watermark-text">Videogrid &nbsp;·&nbsp; Beta v0.78 &nbsp;·&nbsp; </span><span id="about-trigger">About</span></div>
 
   <div id="about-overlay">
     <button id="about-close">&#x2715;</button>
@@ -503,6 +503,8 @@
   const COLS_DESKTOP = 5, ROWS_DESKTOP = 5;
   const COLS_MOBILE  = 3, ROWS_MOBILE  = 6;
   let currentCols, currentRows, totalCells;
+  const cellCache = new Map(); // index → DOM element, populated once in buildGrid
+  let pendingShare = null;     // { file, blobUrl, ext, ts } — avoids storing state on DOM
 
   // ── Audio ──
   // iOS Safari suspends AudioContext aggressively — even when created inside a
@@ -572,6 +574,7 @@
         cell.addEventListener('click', () => onCellClick(i));
         cell.addEventListener('touchend', (e) => { e.preventDefault(); onCellClick(i); });
         grid.appendChild(cell);
+        cellCache.set(i, cell); // cache for O(1) lookup — avoids querySelector on every tap/record
       }
     }
 
@@ -611,7 +614,7 @@
   }
 
   function getCell(index) {
-    return document.querySelector(`.cell[data-index="${index}"]`);
+    return cellCache.get(index) || document.querySelector(`.cell[data-index="${index}"]`);
   }
 
   // ── In-page toast — replaces alert() ──
@@ -797,34 +800,49 @@
   const cellStates = new Map();
 
   // ── Global loop ticker ──
-  // setInterval at 50ms (20fps) — well within the 80ms switch window.
-  // Using setInterval rather than rAF means the callback only fires 20x/sec
-  // rather than 60-120x/sec. With rAF + timestamp gate the function was still
-  // being invoked at full frame rate, just returning early — each invocation
-  // still costs a JS call + IPC round-trip for the timestamp. setInterval
-  // eliminates that entirely. Suspended during export via exportRunning flag.
+  // Event-driven: attach an 'ended' listener to the active video of each cell.
+  // It fires exactly when the clip finishes — no polling, no currentTime reads.
+  // This eliminates the main cause of countdown slowing as the grid fills up.
+  //
+  // Safety net: a 500ms setInterval catches any cells where 'ended' failed to
+  // fire (iOS Safari can occasionally miss it). Runs infrequently enough to have
+  // no measurable performance impact. Both are suspended during export via
+  // exportRunning — videos use loop=true as a native fallback during that window.
   let exportRunning = false;
 
+  function attachEndedListener(state) {
+    if (!state.active) return;
+    state.active._endedHandler = () => {
+      if (exportRunning || state.switching) return;
+      doSwitch(state);
+    };
+    state.active.addEventListener('ended', state.active._endedHandler, { once: true });
+  }
+
+  function doSwitch(state) {
+    state.switching = true;
+    state.next.currentTime = 0;
+    state.next.play().then(() => {
+      state.next.style.opacity = '1';
+      state.active.style.opacity = '0';
+      const prev = state.active;
+      state.active = state.next;
+      state.next = prev;
+      state.next.pause();
+      state.switching = false;
+      attachEndedListener(state); // reattach to the new active video
+    }).catch(() => { state.switching = false; });
+  }
+
+  // Safety net — catches any cells where 'ended' failed to fire
   setInterval(() => {
     if (exportRunning) return;
     cellStates.forEach((state) => {
-      const { active, next } = state;
-      if (!active || !active.duration || state.switching) return;
-      const remaining = active.duration - active.currentTime;
-      if (remaining < 0.08) {
-        state.switching = true;
-        next.currentTime = 0;
-        next.play().then(() => {
-          next.style.opacity = '1';
-          active.style.opacity = '0';
-          state.active = next;
-          state.next   = active;
-          state.next.pause();
-          state.switching = false;
-        }).catch(() => { state.switching = false; });
-      }
+      if (!state.active || !state.active.duration || state.switching) return;
+      const remaining = state.active.duration - state.active.currentTime;
+      if (remaining < 0.08) doSwitch(state);
     });
-  }, 50);
+  }, 500);
 
   // ── About overlay ──
   const aboutOverlay = document.getElementById('about-overlay');
@@ -907,17 +925,16 @@
     cell.prepend(vidA);
     cell.classList.add('has-video', 'idle');
 
-    // Register state in the global map — the loop ticker picks it up automatically
-    cellStates.set(index, {
+    // Register state in the global map and attach ended listener
+    const state = {
       active:    vidA,
       next:      vidB,
       switching: false,
       bufferUrl: url,
       facing:    facingAtRecord,
-      // Keep refs for share feature canvas drawing
-      get bufferA() { return this.active; },
-      get bufferB() { return this.next;   }
-    });
+    };
+    cellStates.set(index, state);
+    attachEndedListener(state);
 
     vidA.play().catch(() => {});
 
@@ -1020,9 +1037,9 @@
     const progressBar = document.getElementById('share-progress');
 
     // ── Pending share: user tapped "Tap to Share" (iOS and others) ──
-    if (btn._pendingShare) {
-      const { file, blobUrl, ext, ts } = btn._pendingShare;
-      btn._pendingShare = null;
+    if (pendingShare) {
+      const { file, blobUrl, ext, ts } = pendingShare;
+      pendingShare = null;
       btn.classList.remove('ready');
       btn.textContent = 'Share grid';
 
@@ -1053,8 +1070,7 @@
     btn.disabled = true;
     btn.textContent = 'Preparing…';
 
-    const firstCell = document.querySelector('.cell[data-index="0"]');
-    const cellRect  = firstCell.getBoundingClientRect();
+    const cellRect  = cells[0].getBoundingClientRect(); // cells already built above
     // Both iOS and Android use 800px — source cells are 320×240 so 1280px was
     // pure overhead with no quality gain. Matching canvas size cuts compositing
     // work by ~3× on iOS and removes the main cause of export stutter.
@@ -1067,10 +1083,46 @@
     const canvas = document.createElement('canvas');
     canvas.width  = cellW * currentCols;
     canvas.height = cellH * currentRows;
-    const ctx = canvas.getContext('2d');
+    // alpha:false tells the browser the canvas is fully opaque — skips alpha
+    // compositing on every drawImage call, free performance hint
+    const ctx = canvas.getContext('2d', { alpha: false });
 
-    // Suspend globalLoopTick for the duration — videos have loop=true as fallback
+    // Suspend loop — videos use loop=true as native fallback during export
     exportRunning = true;
+
+    // Pre-compute per-cell draw data once — these values don't change during the
+    // 10-second export. Avoids recalculating scale/crop on every cell every frame.
+    const drawCells = cells.map((cell, i) => {
+      const col = i % currentCols;
+      const row = Math.floor(i / currentCols);
+      const x = col * cellW;
+      const y = row * cellH;
+      const index = parseInt(cell.dataset.index);
+      const state = cellStates.get(index) || null;
+      // Source crop — computed now, reused every frame
+      let sx = 0, sy = 0, sw = cellW, sh = cellH;
+      if (state) {
+        const vid = state.active;
+        if (vid && vid.videoWidth) {
+          const vw = vid.videoWidth;
+          const vh = vid.videoHeight;
+          const scale = Math.max(cellW / vw, cellH / vh);
+          sw = cellW / scale;
+          sh = cellH / scale;
+          sx = (vw - sw) / 2;
+          sy = (vh - sh) / 2;
+        }
+      }
+      return { x, y, sx, sy, sw, sh, state };
+    });
+
+    // Pre-compute empty cell gradient — created once, reused every frame
+    const emptyGrad = ctx.createRadialGradient(
+      cellW / 2, cellH / 2, cellW * 0.25,
+      cellW / 2, cellH / 2, cellW * 0.7
+    );
+    emptyGrad.addColorStop(0, 'rgba(0,0,0,0)');
+    emptyGrad.addColorStop(1, 'rgba(0,0,0,0.12)');
 
     const now = new Date();
     const ts  = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}-${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}${String(now.getSeconds()).padStart(2,'0')}`;
@@ -1087,54 +1139,37 @@
       const elapsed = timestamp - startTime;
       progressBar.style.width = Math.min((elapsed / SHARE_DURATION_MS) * 100, 100) + '%';
 
-      // Only draw to canvas at the target export fps and explicitly push each
-      // frame to the recorder via requestFrame(). This replaces captureStream(15)
-      // auto-sampling which is unreliable in Safari — especially on ProMotion
-      // devices where rAF runs at 120fps.
       if (timestamp - lastExportFrame >= EXPORT_FRAME_MS) {
         lastExportFrame = timestamp;
 
         ctx.fillStyle = '#fff';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-        cells.forEach((cell, i) => {
-          const col = i % currentCols;
-          const row = Math.floor(i / currentCols);
-          const x = col * cellW;
-          const y = row * cellH;
-          const state = cellStates.get(parseInt(cell.dataset.index));
+        for (let i = 0; i < drawCells.length; i++) {
+          const { x, y, sx, sy, sw, sh, state } = drawCells[i];
           const vid = state ? state.active : null;
 
           if (vid && vid.readyState >= 2) {
-            const vw = vid.videoWidth  || cellW;
-            const vh = vid.videoHeight || cellH;
-            const scale = Math.max(cellW / vw, cellH / vh);
-            const sw = cellW / scale;
-            const sh = cellH / scale;
-            const sx = (vw - sw) / 2;
-            const sy = (vh - sh) / 2;
-            ctx.save();
             if (state.facing === 'user') {
+              // Mirrored — needs transform
+              ctx.save();
               ctx.translate(x + cellW, y);
               ctx.scale(-1, 1);
+              ctx.drawImage(vid, sx, sy, sw, sh, 0, 0, cellW, cellH);
+              ctx.restore();
             } else {
-              ctx.translate(x, y);
+              // Non-mirrored — draw directly, no save/restore overhead
+              ctx.drawImage(vid, sx, sy, sw, sh, x, y, cellW, cellH);
             }
-            ctx.drawImage(vid, sx, sy, sw, sh, 0, 0, cellW, cellH);
-            ctx.restore();
           } else {
-            ctx.fillStyle = '#fff';
-            ctx.fillRect(x, y, cellW, cellH);
-            const grad = ctx.createRadialGradient(
-              x + cellW/2, y + cellH/2, cellW * 0.25,
-              x + cellW/2, y + cellH/2, cellW * 0.7
-            );
-            grad.addColorStop(0, 'rgba(0,0,0,0)');
-            grad.addColorStop(1, 'rgba(0,0,0,0.12)');
-            ctx.fillStyle = grad;
-            ctx.fillRect(x, y, cellW, cellH);
+            // Empty cell — use pre-computed gradient, translated to cell position
+            ctx.save();
+            ctx.translate(x - cellW / 2, y - cellH / 2);
+            ctx.fillStyle = emptyGrad;
+            ctx.fillRect(cellW / 2, cellH / 2, cellW, cellH);
+            ctx.restore();
           }
-        });
+        }
 
         // Explicitly push this frame to the recorder — no auto-sampling
         if (exportTrack) exportTrack.requestFrame();
@@ -1168,9 +1203,11 @@
       shareRecorder.onstop = () => {
         cancelAnimationFrame(rafId);
         exportTrack = null;
-        // Restore double-buffer invariant before re-enabling globalLoopTick.
+        // Restore double-buffer invariant before re-enabling the loop.
         // exportRunning=false MUST come after the forEach — setting it before
-        // allows setInterval to fire on corrupt state mid-restoration.
+        // allows the safety-net interval to fire on corrupt state mid-restoration.
+        // state.active is read directly — never assume vidA is still active,
+        // the double-buffer may have switched during the export window.
         cellStates.forEach((state) => {
           state.switching = false;
           state.active.loop = false;
@@ -1178,8 +1215,9 @@
           state.next.pause();
           state.next.currentTime = 0;
           state.active.play().catch(() => {});
+          attachEndedListener(state); // reattach — listener was consumed or never fired
         });
-        exportRunning = false; // re-enable globalLoopTick only after state is clean
+        exportRunning = false; // re-enable loop only after state is clean
         // Release canvas resources
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         progressBar.style.display = 'none';
@@ -1201,8 +1239,9 @@
           state.next.pause();
           state.next.currentTime = 0;
           state.active.play().catch(() => {});
+          attachEndedListener(state);
         });
-        exportRunning = false; // re-enable globalLoopTick only after state is clean
+        exportRunning = false; // re-enable loop only after state is clean
         progressBar.style.display = 'none';
         progressBar.style.width = '0%';
         btn.textContent = 'Share grid';
@@ -1252,7 +1291,7 @@
       btn.textContent = 'Tap to share';
       btn.disabled = false;
       btn.classList.add('ready');
-      btn._pendingShare = { file, blobUrl, ext, ts };
+      pendingShare = { file, blobUrl, ext, ts };
       // Haptic pulse to signal the button is ready
       if (navigator.vibrate) navigator.vibrate(200);
     } else {
