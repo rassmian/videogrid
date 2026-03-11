@@ -463,7 +463,7 @@
   <div id="grid"></div>
 </div>
 
-<div id="title-mark"><span class="watermark-text">Videogrid &nbsp;·&nbsp; Beta v0.75 &nbsp;·&nbsp; </span><span id="about-trigger">About</span></div>
+<div id="title-mark"><span class="watermark-text">Videogrid &nbsp;·&nbsp; Beta v0.76 &nbsp;·&nbsp; </span><span id="about-trigger">About</span></div>
 
   <div id="about-overlay">
     <button id="about-close">&#x2715;</button>
@@ -1155,7 +1155,10 @@
       let shareRecorder;
       const shareMimeType = getSupportedMimeType(isAndroid);
       try {
-        shareRecorder = new MediaRecorder(canvasStream, { mimeType: shareMimeType, videoBitsPerSecond: isAndroid ? 2000000 : 2500000 });
+        // iOS: 1200kbps — source is 320×240 upscaled, higher bitrates cause the h264
+        // encoder to block the main thread more aggressively, worsening frame timing.
+        // Android: 2000kbps — vp9 encodes off-main-thread so higher bitrate is safe.
+        shareRecorder = new MediaRecorder(canvasStream, { mimeType: shareMimeType, videoBitsPerSecond: isAndroid ? 2000000 : 1200000 });
       } catch(e) {
         // If explicit mimeType constructor fails, try without bitrate constraint but keep mimeType
         try {
@@ -1171,6 +1174,17 @@
         cancelAnimationFrame(rafId);
         exportTrack = null;
         exportRunning = false;
+        // Restore double-buffer invariant — loop=true on both buffers during export
+        // causes vidB (the idle buffer) to start playing independently, corrupting
+        // the A/B state that globalLoopTick depends on. Reset it cleanly here.
+        cellStates.forEach((state) => {
+          state.switching = false;
+          state.active.loop = false;
+          state.next.loop = false;
+          state.next.pause();
+          state.next.currentTime = 0;
+          state.active.play().catch(() => {});
+        });
         // Release canvas resources
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         progressBar.style.display = 'none';
@@ -1186,6 +1200,14 @@
         cancelAnimationFrame(rafId);
         exportTrack = null;
         exportRunning = false;
+        cellStates.forEach((state) => {
+          state.switching = false;
+          state.active.loop = false;
+          state.next.loop = false;
+          state.next.pause();
+          state.next.currentTime = 0;
+          state.active.play().catch(() => {});
+        });
         progressBar.style.display = 'none';
         progressBar.style.width = '0%';
         btn.textContent = 'Share grid';
