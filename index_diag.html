@@ -934,7 +934,7 @@
   window.addEventListener('pageshow', (e) => {
     if (e.persisted) onPageResume();
   });
-  // window.focus intentionally removed — fires on every tap, resets lastDiagData mid-capture
+  window.addEventListener('focus', () => { /* intentionally empty — focus fires on every tap and was wiping lastDiagData */ });
 
   function getSupportedMimeType(forceWebm) {
     // Android Chrome may report mp4 as supported but fails at runtime — force webm.
@@ -1121,9 +1121,24 @@
         try {
           await navigator.share({ files: [file] });
           URL.revokeObjectURL(blobUrl);
+          // Share sheet closed — reliable hook for diagnostics
+          lastDiagData = '';
+          restartCellVideos(1);
+          setTimeout(() => restartCellVideos(2), 400);
+          setTimeout(() => restartCellVideos(3), 1000);
+          setTimeout(() => captureDiag('final state @ 1500ms'), 1500);
           return;
         } catch(err) {
-          if (err.name === 'AbortError') { URL.revokeObjectURL(blobUrl); return; }
+          if (err.name === 'AbortError') {
+            URL.revokeObjectURL(blobUrl);
+            // User cancelled share — still capture state
+            lastDiagData = '';
+            restartCellVideos(1);
+            setTimeout(() => restartCellVideos(2), 400);
+            setTimeout(() => restartCellVideos(3), 1000);
+            setTimeout(() => captureDiag('final state @ 1500ms'), 1500);
+            return;
+          }
         }
       }
 
