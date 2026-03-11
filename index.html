@@ -463,7 +463,7 @@
   <div id="grid"></div>
 </div>
 
-<div id="title-mark"><span class="watermark-text">Videogrid &nbsp;·&nbsp; Beta v0.74 &nbsp;·&nbsp; </span><span id="about-trigger">About</span></div>
+<div id="title-mark"><span class="watermark-text">Videogrid &nbsp;·&nbsp; Beta v0.75 &nbsp;·&nbsp; </span><span id="about-trigger">About</span></div>
 
   <div id="about-overlay">
     <button id="about-close">&#x2715;</button>
@@ -797,26 +797,35 @@
   const cellStates = new Map();
 
   // ── Global loop ticker ──
-  // One single rAF loop checks all active cells every frame.
-  // Far cheaper than 25 separate rAF callbacks at 60fps.
-  function globalLoopTick() {
-    cellStates.forEach((state) => {
-      const { active, next } = state;
-      if (!active || !active.duration || state.switching) return;
-      const remaining = active.duration - active.currentTime;
-      if (remaining < 0.08) {
-        state.switching = true;
-        next.currentTime = 0;
-        next.play().then(() => {
-          next.style.opacity = '1';
-          active.style.opacity = '0';
-          state.active = next;
-          state.next   = active;
-          state.next.pause();
-          state.switching = false;
-        }).catch(() => { state.switching = false; });
-      }
-    });
+  // Throttled to 20fps — enough to catch the 80ms switch window while cutting
+  // currentTime reads from 1080+/sec (60fps x 18 cells) down to ~360/sec.
+  // Suspended during export so drawFrame gets the full main thread budget.
+  // Videos also have loop=true as a native fallback during export suspension.
+  let exportRunning = false;
+  let loopLastTick = 0;
+  const LOOP_TICK_MS = 1000 / 20;
+
+  function globalLoopTick(timestamp) {
+    if (!exportRunning && timestamp - loopLastTick >= LOOP_TICK_MS) {
+      loopLastTick = timestamp;
+      cellStates.forEach((state) => {
+        const { active, next } = state;
+        if (!active || !active.duration || state.switching) return;
+        const remaining = active.duration - active.currentTime;
+        if (remaining < 0.08) {
+          state.switching = true;
+          next.currentTime = 0;
+          next.play().then(() => {
+            next.style.opacity = '1';
+            active.style.opacity = '0';
+            state.active = next;
+            state.next   = active;
+            state.next.pause();
+            state.switching = false;
+          }).catch(() => { state.switching = false; });
+        }
+      });
+    }
     requestAnimationFrame(globalLoopTick);
   }
   requestAnimationFrame(globalLoopTick);
@@ -889,6 +898,7 @@
       v.src = url;
       v.muted = true;
       v.playsInline = true;
+      v.loop = true; // native fallback — used during export when globalLoopTick is suspended
       v.setAttribute('webkit-playsinline', ''); // older iOS Safari
       if (facingAtRecord === 'user') v.classList.add('mirror');
       return v;
@@ -1050,10 +1060,11 @@
 
     const firstCell = document.querySelector('.cell[data-index="0"]');
     const cellRect  = firstCell.getBoundingClientRect();
-    // iOS gets 1280px wide export for quality (mp4 encoder handles it well).
-    // Android uses 640px — Chrome's MediaRecorder struggles with large canvas capture.
+    // Both iOS and Android use 800px — source cells are 320×240 so 1280px was
+    // pure overhead with no quality gain. Matching canvas size cuts compositing
+    // work by ~3× on iOS and removes the main cause of export stutter.
     const isAndroid = /android/i.test(navigator.userAgent);
-    const exportWidth = isAndroid ? 800 : 1280;
+    const exportWidth = 800;
     const exportCellW = Math.round(exportWidth / currentCols);
     const exportCellH = Math.round(exportCellW * (cellRect.height / cellRect.width));
     const cellW = exportCellW;
@@ -1062,6 +1073,9 @@
     canvas.width  = cellW * currentCols;
     canvas.height = cellH * currentRows;
     const ctx = canvas.getContext('2d');
+
+    // Suspend globalLoopTick for the duration — videos have loop=true as fallback
+    exportRunning = true;
 
     const now = new Date();
     const ts  = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}-${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}${String(now.getSeconds()).padStart(2,'0')}`;
@@ -1156,6 +1170,7 @@
       shareRecorder.onstop = () => {
         cancelAnimationFrame(rafId);
         exportTrack = null;
+        exportRunning = false;
         // Release canvas resources
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         progressBar.style.display = 'none';
@@ -1170,6 +1185,7 @@
         // Restore UI before rejecting so the button is never permanently stuck
         cancelAnimationFrame(rafId);
         exportTrack = null;
+        exportRunning = false;
         progressBar.style.display = 'none';
         progressBar.style.width = '0%';
         btn.textContent = 'Share grid';
