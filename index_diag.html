@@ -246,6 +246,8 @@
   #title-mark #about-trigger:hover { opacity: 0.7; }
   #title-mark .watermark-text {
     opacity: 0.35;
+    pointer-events: auto;
+    cursor: default;
   }
 
   /* About overlay */
@@ -863,7 +865,7 @@
   // Tap the watermark 3 times rapidly to show the last resume diagnostic.
   let diagTaps = 0, diagTimer;
   let lastDiagData = null;
-  document.getElementById('title-mark').addEventListener('click', () => {
+  document.querySelector('.watermark-text').addEventListener('click', () => {
     diagTaps++;
     clearTimeout(diagTimer);
     diagTimer = setTimeout(() => { diagTaps = 0; }, 600);
