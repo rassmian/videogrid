@@ -463,7 +463,7 @@
   <div id="grid"></div>
 </div>
 
-<div id="title-mark"><span class="watermark-text">Videogrid &nbsp;·&nbsp; Beta v0.80 &nbsp;·&nbsp; </span><span id="about-trigger">About</span></div>
+<div id="title-mark"><span class="watermark-text">Videogrid &nbsp;·&nbsp; Beta v0.81 &nbsp;·&nbsp; </span><span id="about-trigger">About</span></div>
 
   <div id="about-overlay">
     <button id="about-close">&#x2715;</button>
@@ -1111,6 +1111,9 @@
     // alpha:false tells the browser the canvas is fully opaque — skips alpha
     // compositing on every drawImage call, free performance hint
     const ctx = canvas.getContext('2d', { alpha: false });
+    // Pre-fill dark so first exported frame isn't blank if videos aren't ready yet
+    ctx.fillStyle = '#111';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     // Suspend loop — videos use loop=true as native fallback during export
     exportRunning = true;
@@ -1165,9 +1168,9 @@
       if (timestamp - lastExportFrame >= EXPORT_FRAME_MS) {
         lastExportFrame = timestamp;
 
-        ctx.fillStyle = '#111';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-
+        // No global canvas clear — cells with a state that are momentarily
+        // unready (mid-switch) retain their previous frame rather than flashing
+        // black or white. Only truly empty cells (no recorded state) get a fill.
         for (let i = 0; i < drawCells.length; i++) {
           const { x, y, sx, sy, sw, sh, state } = drawCells[i];
           const vid = state ? state.active : null;
@@ -1182,12 +1185,12 @@
             } else {
               ctx.drawImage(vid, sx, sy, sw, sh, x, y, cellW, cellH);
             }
-          } else {
-            // Empty or mid-switch cell — solid dark fill, clearly intentional
-            ctx.fillStyle = '#222';
+          } else if (!state) {
+            // Genuinely empty cell — fill dark
+            ctx.fillStyle = '#111';
             ctx.fillRect(x, y, cellW, cellH);
-            ctx.fillStyle = '#111'; // restore for next iteration's background
           }
+          // state exists but readyState < 2: skip — canvas retains previous frame
         }
 
         if (exportTrack) exportTrack.requestFrame();
@@ -1225,11 +1228,11 @@
         progressBar.style.display = 'none';
         progressBar.style.width = '0%';
 
-        // Stagger play() calls across all cells — firing all 18 simultaneously
-        // saturates the iOS media pipeline at exactly the moment "Tap to Share"
-        // appears, causing the button sheen and live grid to stutter.
+        // Stagger play() calls — firing all cells simultaneously saturates the
+        // iOS media pipeline right as "Tap to Share" appears, causing stutter.
         // 15ms between each spreads the load over ~270ms, invisible to the user.
         const states = [...cellStates.values()];
+        const staggerDone = states.length * 15 + 50;
         states.forEach((state, i) => {
           setTimeout(() => {
             state.switching = false;
@@ -1242,16 +1245,16 @@
           }, i * 15);
         });
         // Re-enable loop only after all play() calls have been queued
-        setTimeout(() => { exportRunning = false; }, states.length * 15 + 50);
+        setTimeout(() => { exportRunning = false; }, staggerDone);
 
-        // Defer Blob/File creation — synchronous on potentially several MB of data.
-        // Deferring to the next task lets the play() stagger begin before the
-        // main thread is blocked by memory allocation.
+        // Blob/File creation deferred until AFTER all play() calls have fired —
+        // setTimeout(0) fires before setTimeout(15ms+) so previously it was
+        // blocking the main thread before the first play() call started.
         setTimeout(() => {
           const blob = new Blob(shareChunks, { type: shareRecorder.mimeType });
           const ext  = shareRecorder.mimeType.includes('mp4') ? 'mp4' : 'webm';
           resolve(new File([blob], `videogrid-${ts}.${ext}`, { type: shareRecorder.mimeType }));
-        }, 0);
+        }, staggerDone + 50);
       };
       shareRecorder.onerror = (e) => {
         cancelAnimationFrame(rafId);
