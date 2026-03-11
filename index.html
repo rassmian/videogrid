@@ -463,7 +463,7 @@
   <div id="grid"></div>
 </div>
 
-<div id="title-mark"><span class="watermark-text">Videogrid &nbsp;·&nbsp; Beta v0.78 &nbsp;·&nbsp; </span><span id="about-trigger">About</span></div>
+<div id="title-mark"><span class="watermark-text">Videogrid &nbsp;·&nbsp; Beta v0.79 &nbsp;·&nbsp; </span><span id="about-trigger">About</span></div>
 
   <div id="about-overlay">
     <button id="about-close">&#x2715;</button>
@@ -1116,67 +1116,51 @@
       return { x, y, sx, sy, sw, sh, state };
     });
 
-    // Pre-compute empty cell gradient — created once, reused every frame
-    const emptyGrad = ctx.createRadialGradient(
-      cellW / 2, cellH / 2, cellW * 0.25,
-      cellW / 2, cellH / 2, cellW * 0.7
-    );
-    emptyGrad.addColorStop(0, 'rgba(0,0,0,0)');
-    emptyGrad.addColorStop(1, 'rgba(0,0,0,0.12)');
-
     const now = new Date();
     const ts  = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}-${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}${String(now.getSeconds()).padStart(2,'0')}`;
 
-    let rafId;
-    let startTime = null;
-    const EXPORT_FPS = 18;  // targets ~15fps actual after iOS h264 encoder overhead
+    // setInterval rather than rAF — rAF fires at 60-120fps as part of the browser
+    // rendering pipeline, starving the live grid for the full 10s export window even
+    // though we only draw every ~100ms. setInterval fires only at the export rate,
+    // leaving the rendering pipeline entirely free for the live grid.
+    const EXPORT_FPS = 10; // conservative — well within iPhone 12's h264 ceiling (~11.5fps)
     const EXPORT_FRAME_MS = 1000 / EXPORT_FPS;
-    let lastExportFrame = -Infinity;
+    let exportIntervalId;
+    let exportStartTime = null;
     let exportTrack = null;
 
-    function drawFrame(timestamp) {
-      if (!startTime) startTime = timestamp;
-      const elapsed = timestamp - startTime;
+    exportIntervalId = setInterval(() => {
+      const tick = performance.now();
+      if (!exportStartTime) exportStartTime = tick;
+      const elapsed = tick - exportStartTime;
+
       progressBar.style.width = Math.min((elapsed / SHARE_DURATION_MS) * 100, 100) + '%';
 
-      if (timestamp - lastExportFrame >= EXPORT_FRAME_MS) {
-        lastExportFrame = timestamp;
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-        ctx.fillStyle = '#fff';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      for (let i = 0; i < drawCells.length; i++) {
+        const { x, y, sx, sy, sw, sh, state } = drawCells[i];
+        const vid = state ? state.active : null;
 
-        for (let i = 0; i < drawCells.length; i++) {
-          const { x, y, sx, sy, sw, sh, state } = drawCells[i];
-          const vid = state ? state.active : null;
-
-          if (vid && vid.readyState >= 2) {
-            if (state.facing === 'user') {
-              // Mirrored — needs transform
-              ctx.save();
-              ctx.translate(x + cellW, y);
-              ctx.scale(-1, 1);
-              ctx.drawImage(vid, sx, sy, sw, sh, 0, 0, cellW, cellH);
-              ctx.restore();
-            } else {
-              // Non-mirrored — draw directly, no save/restore overhead
-              ctx.drawImage(vid, sx, sy, sw, sh, x, y, cellW, cellH);
-            }
-          } else {
-            // Empty cell — use pre-computed gradient, translated to cell position
+        if (vid && vid.readyState >= 2) {
+          if (state.facing === 'user') {
             ctx.save();
-            ctx.translate(x - cellW / 2, y - cellH / 2);
-            ctx.fillStyle = emptyGrad;
-            ctx.fillRect(cellW / 2, cellH / 2, cellW, cellH);
+            ctx.translate(x + cellW, y);
+            ctx.scale(-1, 1);
+            ctx.drawImage(vid, sx, sy, sw, sh, 0, 0, cellW, cellH);
             ctx.restore();
+          } else {
+            ctx.drawImage(vid, sx, sy, sw, sh, x, y, cellW, cellH);
           }
         }
-
-        // Explicitly push this frame to the recorder — no auto-sampling
-        if (exportTrack) exportTrack.requestFrame();
+        // Empty cells: white background already applied by fillRect above — no gradient needed
       }
 
-      if (elapsed < SHARE_DURATION_MS) rafId = requestAnimationFrame(drawFrame);
-    }
+      if (exportTrack) exportTrack.requestFrame();
+
+      if (elapsed >= SHARE_DURATION_MS) clearInterval(exportIntervalId);
+    }, EXPORT_FRAME_MS);
 
     const filePromise = new Promise((resolve, reject) => {
       // captureStream(0): manual frame delivery only — no auto-sampling by browser
@@ -1201,7 +1185,7 @@
       const shareChunks = [];
       shareRecorder.ondataavailable = e => { if (e.data.size > 0) shareChunks.push(e.data); };
       shareRecorder.onstop = () => {
-        cancelAnimationFrame(rafId);
+        clearInterval(exportIntervalId);
         exportTrack = null;
         // Restore double-buffer invariant before re-enabling the loop.
         // exportRunning=false MUST come after the forEach — setting it before
@@ -1230,7 +1214,7 @@
       };
       shareRecorder.onerror = (e) => {
         // Restore UI before rejecting so the button is never permanently stuck
-        cancelAnimationFrame(rafId);
+        clearInterval(exportIntervalId);
         exportTrack = null;
         cellStates.forEach((state) => {
           state.switching = false;
@@ -1250,9 +1234,8 @@
       };
 
       progressBar.style.display = 'block';
-      // Draw one frame immediately so the recorder's first frame is the grid,
-      // not black. Then start the recorder after a short delay.
-      rafId = requestAnimationFrame(drawFrame);
+      // Start recorder after 200ms so the first interval tick has drawn a frame
+      // before recording begins — ensures recorder's first frame is the grid, not black.
       setTimeout(() => {
         shareRecorder.start();
         setTimeout(() => shareRecorder.stop(), SHARE_DURATION_MS);
