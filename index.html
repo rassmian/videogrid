@@ -463,7 +463,7 @@
   <div id="grid"></div>
 </div>
 
-<div id="title-mark"><span class="watermark-text">Videogrid &nbsp;·&nbsp; Beta v0.79 &nbsp;·&nbsp; </span><span id="about-trigger">About</span></div>
+<div id="title-mark"><span class="watermark-text">Videogrid &nbsp;·&nbsp; Beta v0.80 &nbsp;·&nbsp; </span><span id="about-trigger">About</span></div>
 
   <div id="about-overlay">
     <button id="about-close">&#x2715;</button>
@@ -864,6 +864,20 @@
   function onPageResume() {
     // Re-acquire camera silently if track ended during suspension
     if (stream) ensureStream();
+
+    // iOS Safari pauses all video elements when the share sheet opens.
+    // Restart paused active videos, staggered to avoid saturating the
+    // media pipeline all at once — same pattern as onstop restoration.
+    if (cellStates.size > 0) {
+      const states = [...cellStates.values()];
+      states.forEach((state, i) => {
+        setTimeout(() => {
+          if (state.active && state.active.paused) {
+            state.active.play().catch(() => {});
+          }
+        }, i * 15);
+      });
+    }
   }
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') onPageResume();
@@ -891,9 +905,6 @@
     const rec  = cell.querySelector('.rec-indicator');
     rec.classList.remove('show');
 
-    liveFeed.srcObject = null;
-    liveFeed.remove();
-
     // Revoke old blob URL if re-recording over an existing cell
     const existing = cellStates.get(index);
     if (existing) {
@@ -903,29 +914,28 @@
 
     const facingAtRecord = currentFacing;
     // ── Double-buffer seamless loop ──
-    // Two videos share the same blob URL and alternate to eliminate loop gap.
-    // The global rAF ticker handles the switching — no per-cell rAF needed.
     function makeVid() {
       const v = document.createElement('video');
       v.className = 'recorded';
       v.src = url;
       v.muted = true;
       v.playsInline = true;
-      v.loop = true; // native fallback — used during export when globalLoopTick is suspended
-      v.setAttribute('webkit-playsinline', ''); // older iOS Safari
+      v.loop = true;
+      v.setAttribute('webkit-playsinline', '');
       if (facingAtRecord === 'user') v.classList.add('mirror');
       return v;
     }
 
     const vidA = makeVid();
     const vidB = makeVid();
+    // Both start invisible — inserted behind the still-visible live feed.
+    // vidA becomes visible only when it has its first frame ready.
+    vidA.style.opacity = '0';
     vidB.style.opacity = '0';
 
     cell.prepend(vidB);
     cell.prepend(vidA);
-    cell.classList.add('has-video', 'idle');
 
-    // Register state in the global map and attach ended listener
     const state = {
       active:    vidA,
       next:      vidB,
@@ -936,9 +946,24 @@
     cellStates.set(index, state);
     attachEndedListener(state);
 
-    vidA.play().catch(() => {});
+    // Swap live feed → recorded video without a flash of white.
+    // canplay fires when the browser has decoded the first frame and can display it.
+    // We hold the live feed visible until that moment, then swap atomically.
+    let swapped = false;
+    function doSwapIn() {
+      if (swapped) return;
+      swapped = true;
+      vidA.style.opacity = '1';
+      liveFeed.srcObject = null;
+      liveFeed.remove();
+      cell.classList.add('has-video', 'idle');
+      isRecording = false;
+    }
+    vidA.addEventListener('canplay', doSwapIn, { once: true });
+    // Safety net — if canplay never fires (e.g. codec issue), proceed after 800ms
+    setTimeout(doSwapIn, 800);
 
-    isRecording = false;
+    vidA.play().catch(() => {});
   }
 
   // ── Resize ──
@@ -1119,48 +1144,57 @@
     const now = new Date();
     const ts  = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}-${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}${String(now.getSeconds()).padStart(2,'0')}`;
 
-    // setInterval rather than rAF — rAF fires at 60-120fps as part of the browser
-    // rendering pipeline, starving the live grid for the full 10s export window even
-    // though we only draw every ~100ms. setInterval fires only at the export rate,
-    // leaving the rendering pipeline entirely free for the live grid.
-    const EXPORT_FPS = 10; // conservative — well within iPhone 12's h264 ceiling (~11.5fps)
+    // rAF for the export draw loop — it synchronises to the display pipeline so
+    // when the h264 encoder blocks the main thread, the next rAF naturally waits
+    // until the encoder releases. setInterval does not adapt and accumulates drift,
+    // causing uneven gaps and lower actual fps. Confirmed by frame analysis.
+    // The live grid stutter does NOT occur during export — only in onstop —
+    // so rAF here is the right choice and does not affect the live grid.
+    const EXPORT_FPS = 15;
     const EXPORT_FRAME_MS = 1000 / EXPORT_FPS;
-    let exportIntervalId;
-    let exportStartTime = null;
+    let rafId;
+    let startTime = null;
+    let lastExportFrame = -Infinity;
     let exportTrack = null;
 
-    exportIntervalId = setInterval(() => {
-      const tick = performance.now();
-      if (!exportStartTime) exportStartTime = tick;
-      const elapsed = tick - exportStartTime;
-
+    function drawFrame(timestamp) {
+      if (!startTime) startTime = timestamp;
+      const elapsed = timestamp - startTime;
       progressBar.style.width = Math.min((elapsed / SHARE_DURATION_MS) * 100, 100) + '%';
 
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      if (timestamp - lastExportFrame >= EXPORT_FRAME_MS) {
+        lastExportFrame = timestamp;
 
-      for (let i = 0; i < drawCells.length; i++) {
-        const { x, y, sx, sy, sw, sh, state } = drawCells[i];
-        const vid = state ? state.active : null;
+        ctx.fillStyle = '#111';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-        if (vid && vid.readyState >= 2) {
-          if (state.facing === 'user') {
-            ctx.save();
-            ctx.translate(x + cellW, y);
-            ctx.scale(-1, 1);
-            ctx.drawImage(vid, sx, sy, sw, sh, 0, 0, cellW, cellH);
-            ctx.restore();
+        for (let i = 0; i < drawCells.length; i++) {
+          const { x, y, sx, sy, sw, sh, state } = drawCells[i];
+          const vid = state ? state.active : null;
+
+          if (vid && vid.readyState >= 2) {
+            if (state.facing === 'user') {
+              ctx.save();
+              ctx.translate(x + cellW, y);
+              ctx.scale(-1, 1);
+              ctx.drawImage(vid, sx, sy, sw, sh, 0, 0, cellW, cellH);
+              ctx.restore();
+            } else {
+              ctx.drawImage(vid, sx, sy, sw, sh, x, y, cellW, cellH);
+            }
           } else {
-            ctx.drawImage(vid, sx, sy, sw, sh, x, y, cellW, cellH);
+            // Empty or mid-switch cell — solid dark fill, clearly intentional
+            ctx.fillStyle = '#222';
+            ctx.fillRect(x, y, cellW, cellH);
+            ctx.fillStyle = '#111'; // restore for next iteration's background
           }
         }
-        // Empty cells: white background already applied by fillRect above — no gradient needed
+
+        if (exportTrack) exportTrack.requestFrame();
       }
 
-      if (exportTrack) exportTrack.requestFrame();
-
-      if (elapsed >= SHARE_DURATION_MS) clearInterval(exportIntervalId);
-    }, EXPORT_FRAME_MS);
+      if (elapsed < SHARE_DURATION_MS) rafId = requestAnimationFrame(drawFrame);
+    }
 
     const filePromise = new Promise((resolve, reject) => {
       // captureStream(0): manual frame delivery only — no auto-sampling by browser
@@ -1185,57 +1219,68 @@
       const shareChunks = [];
       shareRecorder.ondataavailable = e => { if (e.data.size > 0) shareChunks.push(e.data); };
       shareRecorder.onstop = () => {
-        clearInterval(exportIntervalId);
+        cancelAnimationFrame(rafId);
         exportTrack = null;
-        // Restore double-buffer invariant before re-enabling the loop.
-        // exportRunning=false MUST come after the forEach — setting it before
-        // allows the safety-net interval to fire on corrupt state mid-restoration.
-        // state.active is read directly — never assume vidA is still active,
-        // the double-buffer may have switched during the export window.
-        cellStates.forEach((state) => {
-          state.switching = false;
-          state.active.loop = false;
-          state.next.loop = false;
-          state.next.pause();
-          state.next.currentTime = 0;
-          state.active.play().catch(() => {});
-          attachEndedListener(state); // reattach — listener was consumed or never fired
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        progressBar.style.display = 'none';
+        progressBar.style.width = '0%';
+
+        // Stagger play() calls across all cells — firing all 18 simultaneously
+        // saturates the iOS media pipeline at exactly the moment "Tap to Share"
+        // appears, causing the button sheen and live grid to stutter.
+        // 15ms between each spreads the load over ~270ms, invisible to the user.
+        const states = [...cellStates.values()];
+        states.forEach((state, i) => {
+          setTimeout(() => {
+            state.switching = false;
+            state.active.loop = false;
+            state.next.loop = false;
+            state.next.pause();
+            state.next.currentTime = 0;
+            state.active.play().catch(() => {});
+            attachEndedListener(state);
+          }, i * 15);
         });
-        exportRunning = false; // re-enable loop only after state is clean
-        // Release canvas resources
+        // Re-enable loop only after all play() calls have been queued
+        setTimeout(() => { exportRunning = false; }, states.length * 15 + 50);
+
+        // Defer Blob/File creation — synchronous on potentially several MB of data.
+        // Deferring to the next task lets the play() stagger begin before the
+        // main thread is blocked by memory allocation.
+        setTimeout(() => {
+          const blob = new Blob(shareChunks, { type: shareRecorder.mimeType });
+          const ext  = shareRecorder.mimeType.includes('mp4') ? 'mp4' : 'webm';
+          resolve(new File([blob], `videogrid-${ts}.${ext}`, { type: shareRecorder.mimeType }));
+        }, 0);
+      };
+      shareRecorder.onerror = (e) => {
+        cancelAnimationFrame(rafId);
+        exportTrack = null;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         progressBar.style.display = 'none';
         progressBar.style.width = '0%';
         btn.textContent = 'Share grid';
         btn.disabled = false;
-        const blob = new Blob(shareChunks, { type: shareRecorder.mimeType });
-        const ext  = shareRecorder.mimeType.includes('mp4') ? 'mp4' : 'webm';
-        resolve(new File([blob], `videogrid-${ts}.${ext}`, { type: shareRecorder.mimeType }));
-      };
-      shareRecorder.onerror = (e) => {
-        // Restore UI before rejecting so the button is never permanently stuck
-        clearInterval(exportIntervalId);
-        exportTrack = null;
-        cellStates.forEach((state) => {
-          state.switching = false;
-          state.active.loop = false;
-          state.next.loop = false;
-          state.next.pause();
-          state.next.currentTime = 0;
-          state.active.play().catch(() => {});
-          attachEndedListener(state);
+        const states = [...cellStates.values()];
+        states.forEach((state, i) => {
+          setTimeout(() => {
+            state.switching = false;
+            state.active.loop = false;
+            state.next.loop = false;
+            state.next.pause();
+            state.next.currentTime = 0;
+            state.active.play().catch(() => {});
+            attachEndedListener(state);
+          }, i * 15);
         });
-        exportRunning = false; // re-enable loop only after state is clean
-        progressBar.style.display = 'none';
-        progressBar.style.width = '0%';
-        btn.textContent = 'Share grid';
-        btn.disabled = false;
+        setTimeout(() => { exportRunning = false; }, states.length * 15 + 50);
         reject(e);
       };
 
       progressBar.style.display = 'block';
-      // Start recorder after 200ms so the first interval tick has drawn a frame
-      // before recording begins — ensures recorder's first frame is the grid, not black.
+      // Draw one frame immediately before recorder starts — ensures first
+      // recorded frame is the grid, not black.
+      rafId = requestAnimationFrame(drawFrame);
       setTimeout(() => {
         shareRecorder.start();
         setTimeout(() => shareRecorder.stop(), SHARE_DURATION_MS);
@@ -1251,8 +1296,13 @@
       file = await filePromise;
     } catch(e) {
       showToast('Could not prepare video — please try again');
+      btn.textContent = 'Share grid';
+      btn.disabled = false;
       return;
     }
+
+    btn.textContent = 'Share grid';
+    btn.disabled = false;
 
     // Detect whether this device can meaningfully share a video file.
     // Android Chrome reports navigator.share but rejects video files silently
