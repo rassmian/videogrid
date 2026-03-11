@@ -908,12 +908,29 @@
     const states = [...cellStates.values()];
     states.forEach((state, i) => {
       setTimeout(() => {
-        if (!exportRunning && state.active && state.active.paused) {
+        if (exportRunning || !state.active) return;
+
+        // switching=true means doSwitch() called next.play() which iOS suspended.
+        // That promise will never resolve or reject — it just hangs.
+        // Reset the switch so the cell can recover.
+        if (state.switching) {
+          state.switching = false;
+          state.next.pause();
+          state.next.currentTime = 0;
+        }
+
+        if (state.active.paused) {
+          // Hard reset currentTime — avoids resuming 1 frame from end,
+          // which fires ended immediately before listener is reattached.
+          state.active.currentTime = 0;
           state.active.play().then(() => {
             attachEndedListener(state);
           }).catch((err) => {
-            lastDiagData += `  cell play() rejected: ${err}\n`;
+            lastDiagData += `  cell${i} play() rejected: ${err}\n`;
           });
+        } else {
+          // Already playing but ended listener may have been lost during suspension.
+          attachEndedListener(state);
         }
       }, i * 15);
     });
@@ -934,7 +951,7 @@
   window.addEventListener('pageshow', (e) => {
     if (e.persisted) onPageResume();
   });
-  window.addEventListener('focus', () => { /* intentionally empty — focus fires on every tap and was wiping lastDiagData */ });
+  // window.focus intentionally not used — fires on every tap, would wipe lastDiagData
 
   function getSupportedMimeType(forceWebm) {
     // Android Chrome may report mp4 as supported but fails at runtime — force webm.
@@ -1121,7 +1138,6 @@
         try {
           await navigator.share({ files: [file] });
           URL.revokeObjectURL(blobUrl);
-          // Share sheet closed — reliable hook for diagnostics
           lastDiagData = '';
           restartCellVideos(1);
           setTimeout(() => restartCellVideos(2), 400);
@@ -1131,7 +1147,6 @@
         } catch(err) {
           if (err.name === 'AbortError') {
             URL.revokeObjectURL(blobUrl);
-            // User cancelled share — still capture state
             lastDiagData = '';
             restartCellVideos(1);
             setTimeout(() => restartCellVideos(2), 400);
