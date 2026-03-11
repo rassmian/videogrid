@@ -934,7 +934,7 @@
   window.addEventListener('pageshow', (e) => {
     if (e.persisted) onPageResume();
   });
-  window.addEventListener('focus', onPageResume);
+  // window.focus intentionally removed — fires on every tap, resets lastDiagData mid-capture
 
   function getSupportedMimeType(forceWebm) {
     // Android Chrome may report mp4 as supported but fails at runtime — force webm.
