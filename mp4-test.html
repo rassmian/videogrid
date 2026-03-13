@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MP4 Recording Test</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Syne:wght@400;800&display=swap');
+  :root {
+    --bg:#0a0a0a;--surface:#141414;--border:#2a2a2a;
+    --accent:#e8ff00;--accent2:#ff6b35;--text:#f0f0f0;
+    --muted:#666;--success:#00ff88;--error:#ff3b5c;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{background:var(--bg);color:var(--text);font-family:'JetBrains Mono',monospace;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:2rem 1rem;}
+  header{text-align:center;margin-bottom:2.5rem;}
+  h1{font-family:'Syne',sans-serif;font-weight:800;font-size:clamp(1.6rem,5vw,2.4rem);letter-spacing:-0.02em;margin-bottom:0.4rem;}
+  h1 span{color:var(--accent);}
+  .subtitle{color:var(--muted);font-size:0.7rem;letter-spacing:0.12em;text-transform:uppercase;}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:2px;padding:1.5rem;width:100%;max-width:520px;margin-bottom:1rem;}
+  .card-label{font-size:0.62rem;letter-spacing:0.15em;text-transform:uppercase;color:var(--muted);margin-bottom:1rem;display:flex;align-items:center;gap:0.5rem;}
+  .card-label::after{content:'';flex:1;height:1px;background:var(--border);}
+  .btn{padding:0.75rem 1.5rem;background:var(--accent);color:#000;font-family:'JetBrains Mono',monospace;font-weight:700;font-size:0.8rem;letter-spacing:0.05em;text-transform:uppercase;border:none;border-radius:2px;cursor:pointer;width:100%;transition:opacity 0.15s;}
+  .btn:hover:not(:disabled){opacity:0.85;}
+  .btn:disabled{opacity:0.3;cursor:not-allowed;}
+  .result-row{display:flex;justify-content:space-between;align-items:center;padding:0.5rem 0;border-bottom:1px solid #1c1c1c;font-size:0.72rem;}
+  .result-row:last-child{border-bottom:none;}
+  .result-key{color:var(--muted);}
+  .result-val{font-weight:700;}
+  .ok{color:var(--success);}
+  .warn{color:var(--accent);}
+  .fail{color:var(--error);}
+  .verdict{margin-top:1.25rem;padding:1rem;border-radius:2px;font-size:0.78rem;line-height:1.6;text-align:center;font-weight:700;}
+  .verdict.green{background:#0a2a1a;border:1px solid var(--success);color:var(--success);}
+  .verdict.yellow{background:#2a2200;border:1px solid var(--accent);color:var(--accent);}
+  .verdict.red{background:#2a0a10;border:1px solid var(--error);color:var(--error);}
+  video{width:100%;background:#000;border-radius:2px;display:block;margin-top:0.75rem;}
+  .log{font-size:0.68rem;line-height:1.8;color:var(--muted);max-height:200px;overflow-y:auto;}
+  .log-entry{display:flex;gap:0.6rem;padding:0.1rem 0;border-bottom:1px solid #181818;}
+  .log-time{color:var(--accent2);min-width:55px;}
+  .log-ok{color:var(--success);}
+  .log-err{color:var(--error);}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>MP4 Recording <span>Test</span></h1>
+  <p class="subtitle">Android Chrome · Can we skip the transcode?</p>
+</header>
+
+<div class="card">
+  <div class="card-label">Device</div>
+  <div id="deviceRows"></div>
+</div>
+
+<div class="card">
+  <div class="card-label">isTypeSupported() — static check</div>
+  <div id="staticRows"></div>
+</div>
+
+<div class="card">
+  <div class="card-label">Runtime test — actually record</div>
+  <button class="btn" id="btnTest" onclick="runTest()">Record 1s with each format</button>
+  <div id="runtimeRows" style="margin-top:1rem;"></div>
+  <video id="preview" autoplay loop muted playsinline style="display:none;"></video>
+  <div id="verdict"></div>
+</div>
+
+<div class="card">
+  <div class="card-label">Log</div>
+  <div class="log" id="log"></div>
+</div>
+
+<script>
+const log = (msg, cls='') => {
+  const ts = (performance.now()/1000).toFixed(2)+'s';
+  const el = document.createElement('div');
+  el.className = 'log-entry';
+  el.innerHTML = `<span class="log-time">${ts}</span><span class="${cls}">${msg}</span>`;
+  const l = document.getElementById('log');
+  l.appendChild(el);
+  l.scrollTop = l.scrollHeight;
+};
+
+const row = (parentId, key, val, cls='') => {
+  const el = document.createElement('div');
+  el.className = 'result-row';
+  el.innerHTML = `<span class="result-key">${key}</span><span class="result-val ${cls}">${val}</span>`;
+  document.getElementById(parentId).appendChild(el);
+};
+
+// ── Device info ──────────────────────────────────────────────────────────
+const ua = navigator.userAgent;
+const isAndroid = /android/i.test(ua);
+const isIOS = /iphone|ipad|ipod/i.test(ua);
+const chromeMatch = ua.match(/Chrome\/(\d+)/);
+const chromeVer = chromeMatch ? parseInt(chromeMatch[1]) : null;
+
+row('deviceRows', 'Platform', isAndroid ? 'Android' : isIOS ? 'iOS' : 'Desktop/Other', isAndroid ? 'ok' : 'warn');
+row('deviceRows', 'Chrome version', chromeVer ? `Chrome ${chromeVer} ${chromeVer >= 113 ? '✓ (MP4 era)' : '⚠ (older)'}` : 'Not Chrome', chromeVer >= 113 ? 'ok' : 'warn');
+row('deviceRows', 'Cores', navigator.hardwareConcurrency || '?');
+row('deviceRows', 'RAM', navigator.deviceMemory ? navigator.deviceMemory + ' GB' : '?');
+
+// ── Static isTypeSupported check ─────────────────────────────────────────
+const formatsToTest = [
+  'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+  'video/mp4;codecs=avc1.42E01E',
+  'video/mp4;codecs=avc1',
+  'video/mp4',
+  'video/webm;codecs=vp9',
+  'video/webm;codecs=vp8',
+  'video/webm',
+];
+
+let firstSupportedMp4 = null;
+let firstSupportedWebm = null;
+
+formatsToTest.forEach(fmt => {
+  const supported = MediaRecorder.isTypeSupported(fmt);
+  const isMp4 = fmt.includes('mp4');
+  if (supported && isMp4 && !firstSupportedMp4) firstSupportedMp4 = fmt;
+  if (supported && !isMp4 && !firstSupportedWebm) firstSupportedWebm = fmt;
+  row('staticRows', fmt, supported ? 'Yes ✓' : 'No', supported ? 'ok' : 'fail');
+  log(`isTypeSupported(${fmt}): ${supported}`, supported ? 'log-ok' : '');
+});
+
+// ── Runtime test ─────────────────────────────────────────────────────────
+async function recordClip(stream, mimeType) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    let recorder;
+
+    try {
+      recorder = new MediaRecorder(stream, {
+        mimeType,
+        videoBitsPerSecond: 2_000_000
+      });
+    } catch(err) {
+      return resolve({ ok: false, error: 'Constructor threw: ' + err.message, blob: null });
+    }
+
+    recorder.onerror = (e) => {
+      resolve({ ok: false, error: 'Runtime error: ' + (e.error?.message || 'unknown'), blob: null });
+    };
+
+    recorder.ondataavailable = e => { if (e.data?.size) chunks.push(e.data); };
+
+    recorder.onstop = () => {
+      if (chunks.length === 0) {
+        return resolve({ ok: false, error: 'No data produced', blob: null });
+      }
+      const blob = new Blob(chunks, { type: recorder.mimeType });
+      if (blob.size < 100) {
+        return resolve({ ok: false, error: `Blob too small (${blob.size} bytes)`, blob: null });
+      }
+      resolve({ ok: true, error: null, blob, actualMime: recorder.mimeType });
+    };
+
+    try {
+      recorder.start();
+      setTimeout(() => {
+        try { recorder.stop(); } catch(e) { resolve({ ok: false, error: 'Stop threw: ' + e.message, blob: null }); }
+      }, 1000);
+    } catch(err) {
+      resolve({ ok: false, error: 'Start threw: ' + err.message, blob: null });
+    }
+  });
+}
+
+window.runTest = async () => {
+  document.getElementById('btnTest').disabled = true;
+  document.getElementById('runtimeRows').innerHTML = '';
+  document.getElementById('verdict').innerHTML = '';
+  document.getElementById('preview').style.display = 'none';
+
+  log('Requesting camera…');
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: 640, height: 480, frameRate: 30 },
+      audio: false
+    });
+    log('Camera acquired', 'log-ok');
+  } catch(err) {
+    log('Camera denied: ' + err.message, 'log-err');
+    document.getElementById('btnTest').disabled = false;
+    return;
+  }
+
+  const toTest = [];
+  if (firstSupportedMp4) toTest.push(firstSupportedMp4);
+  if (firstSupportedWebm) toTest.push(firstSupportedWebm);
+  if (toTest.length === 0) toTest.push('video/webm'); // fallback
+
+  let bestMp4Blob = null;
+
+  for (const fmt of toTest) {
+    log(`Testing runtime: ${fmt}…`);
+    const result = await recordClip(stream, fmt);
+    const isMp4 = fmt.includes('mp4');
+    const sizeStr = result.blob ? (result.blob.size / 1024).toFixed(1) + ' KB' : '—';
+
+    if (result.ok) {
+      log(`✓ ${fmt} → ${sizeStr}`, 'log-ok');
+      row('runtimeRows', fmt, `✓ Works · ${sizeStr}`, 'ok');
+      if (isMp4 && !bestMp4Blob) bestMp4Blob = result.blob;
+    } else {
+      log(`✗ ${fmt} → ${result.error}`, 'log-err');
+      row('runtimeRows', fmt, `✗ ${result.error}`, 'fail');
+    }
+  }
+
+  stream.getTracks().forEach(t => t.stop());
+
+  // ── Verdict ──
+  const verdictEl = document.getElementById('verdict');
+  if (bestMp4Blob) {
+    verdictEl.innerHTML = `<div class="verdict green">🟢 MP4 works at runtime on this device<br><span style="font-weight:400;font-size:0.7rem">You can use MP4 directly — no transcoding needed</span></div>`;
+    log('VERDICT: MP4 recording viable — transcode not needed', 'log-ok');
+    // Show preview
+    const preview = document.getElementById('preview');
+    preview.src = URL.createObjectURL(bestMp4Blob);
+    preview.style.display = 'block';
+  } else if (firstSupportedMp4) {
+    verdictEl.innerHTML = `<div class="verdict yellow">🟡 MP4 passes isTypeSupported() but fails at runtime<br><span style="font-weight:400;font-size:0.7rem">Still need WebM → transcode approach for this device</span></div>`;
+    log('VERDICT: MP4 static-supported but runtime failure — old Chrome behaviour', '');
+  } else {
+    verdictEl.innerHTML = `<div class="verdict red">🔴 MP4 not supported on this device<br><span style="font-weight:400;font-size:0.7rem">WebM only — transcoding required for iOS sharing</span></div>`;
+    log('VERDICT: No MP4 support — transcode needed', 'log-err');
+  }
+
+  document.getElementById('btnTest').disabled = false;
+};
+</script>
+</body>
+</html>
