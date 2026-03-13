@@ -1108,17 +1108,19 @@
       btn.classList.remove('ready');
       btn.textContent = 'Share grid';
 
-      if (navigator.share) {
+      const canShareFile = navigator.canShare && navigator.canShare({ files: [file] });
+      if (navigator.share && canShareFile) {
         try {
           await navigator.share({ files: [file] });
           URL.revokeObjectURL(blobUrl);
           return;
         } catch(err) {
           if (err.name === 'AbortError') { URL.revokeObjectURL(blobUrl); return; }
+          // Share failed — fall through to download
         }
       }
 
-      // Fallback — share API unavailable or failed
+      // Fallback — share API unavailable, canShare rejected, or share failed
       triggerDownload(blobUrl, ext, ts);
       setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
       return;
