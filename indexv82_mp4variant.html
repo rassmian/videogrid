@@ -1356,15 +1356,19 @@
     // Desktop: plain download.
     // (isAndroid already declared above for canvas sizing)
 
-    const blobUrl = URL.createObjectURL(file);
-    const ext = file.name.endsWith('mp4') ? 'mp4' : 'webm';
+    // Normalise MIME type — strip codec string so Android canShare() accepts it.
+    // e.g. 'video/mp4;codecs=avc1.42E01E' → 'video/mp4'
+    const ext = file.type.includes('mp4') ? 'mp4' : 'webm';
+    const cleanMime = ext === 'mp4' ? 'video/mp4' : 'video/webm';
+    const cleanFile = new File([file], `videogrid-${ts}.${ext}`, { type: cleanMime });
+    const blobUrl = URL.createObjectURL(cleanFile);
 
     if (navigator.share) {
       // iOS and other platforms with working share API: two-step gesture flow
       btn.textContent = 'Tap to share';
       btn.disabled = false;
       btn.classList.add('ready');
-      pendingShare = { file, blobUrl, ext, ts };
+      pendingShare = { file: cleanFile, blobUrl, ext, ts };
       // Haptic pulse to signal the button is ready
       if (navigator.vibrate) navigator.vibrate(200);
     } else {
