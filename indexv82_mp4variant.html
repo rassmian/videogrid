@@ -1116,7 +1116,9 @@
         } catch(err) {
           // AbortError = user dismissed share sheet — that's fine
           if (err.name === 'AbortError') { URL.revokeObjectURL(blobUrl); return; }
-          // Any other error — fall through to download
+          // Show error on screen so we can debug without DevTools
+          showToast('Share error: ' + err.name + ' — ' + err.message);
+          // Fall through to download
         }
       }
 
@@ -1154,7 +1156,7 @@
     // compositing on every drawImage call, free performance hint
     const ctx = canvas.getContext('2d', { alpha: false });
     // Pre-fill dark so first exported frame isn't blank if videos aren't ready yet
-    ctx.fillStyle = '#111';
+    ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     // Suspend loop — videos use loop=true as native fallback during export
@@ -1229,7 +1231,7 @@
             }
           } else if (!state) {
             // Genuinely empty cell — fill dark
-            ctx.fillStyle = '#111';
+            ctx.fillStyle = '#ffffff';
             ctx.fillRect(x, y, cellW, cellH);
           }
           // state exists but readyState < 2: skip — canvas retains previous frame
