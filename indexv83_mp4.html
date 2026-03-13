@@ -247,6 +247,22 @@
   #title-mark .watermark-text {
     opacity: 0.35;
   }
+  #quality-badge {
+    display: none;
+    opacity: 0;
+    margin-left: 6px;
+    font-size: 0.65rem;
+    letter-spacing: 0.12em;
+    background: rgba(255,255,255,0.15);
+    border-radius: 3px;
+    padding: 1px 6px;
+    transition: opacity 0.3s;
+    pointer-events: none;
+  }
+  #quality-badge.visible {
+    display: inline;
+    opacity: 1;
+  }
 
   /* About overlay */
   #about-overlay {
@@ -463,7 +479,7 @@
   <div id="grid"></div>
 </div>
 
-<div id="title-mark"><span class="watermark-text">Videogrid &nbsp;·&nbsp; Beta v0.83-mp4 &nbsp;·&nbsp; </span><span id="about-trigger">About</span></div>
+<div id="title-mark"><span class="watermark-text">Videogrid &nbsp;·&nbsp; Beta v0.83-mp4 &nbsp;·&nbsp; </span><span id="about-trigger">About</span><span id="quality-badge"></span></div>
 
   <div id="about-overlay">
     <button id="about-close">&#x2715;</button>
@@ -1038,6 +1054,19 @@
 
   // ── About overlay ──
   const aboutOverlay = document.getElementById('about-overlay');
+  // Tapping version string reveals quality tier briefly, then opens About as normal
+  document.getElementById('about-trigger').addEventListener('click', () => {
+    if (deviceProfile) {
+      const badge = document.getElementById('quality-badge');
+      const tier = deviceProfile.tier.toUpperCase();
+      const fps = deviceProfile.outputFps + 'fps';
+      const res = deviceProfile.camW + 'p';
+      badge.textContent = tier + ' · ' + res + ' · ' + fps;
+      badge.classList.add('visible');
+      clearTimeout(badge._hideTimer);
+      badge._hideTimer = setTimeout(() => badge.classList.remove('visible'), 3000);
+    }
+  });
   document.getElementById('about-trigger').addEventListener('click', () => {
     aboutOverlay.classList.add('visible');
   });
