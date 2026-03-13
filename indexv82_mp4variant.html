@@ -1108,19 +1108,19 @@
       btn.classList.remove('ready');
       btn.textContent = 'Share grid';
 
-      const canShareFile = navigator.canShare && navigator.canShare({ files: [file] });
-      if (navigator.share && canShareFile) {
+      if (navigator.share) {
         try {
           await navigator.share({ files: [file] });
           URL.revokeObjectURL(blobUrl);
           return;
         } catch(err) {
+          // AbortError = user dismissed share sheet — that's fine
           if (err.name === 'AbortError') { URL.revokeObjectURL(blobUrl); return; }
-          // Share failed — fall through to download
+          // Any other error — fall through to download
         }
       }
 
-      // Fallback — share API unavailable, canShare rejected, or share failed
+      // Fallback — share API unavailable or failed
       triggerDownload(blobUrl, ext, ts);
       setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
       return;
@@ -1349,7 +1349,9 @@
     btn.textContent = 'Share grid';
     btn.disabled = false;
 
-    // MP4 is now used on all platforms so navigator.share works on Android too.
+    // Android: download directly — web share API unreliable for video files.
+    // iOS: two-step gesture flow via native share sheet.
+    // Desktop: plain download.
     // (isAndroid already declared above for canvas sizing)
 
     const blobUrl = URL.createObjectURL(file);
