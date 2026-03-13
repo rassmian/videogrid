@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ffmpeg.wasm · Transcode Test</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Syne:wght@400;800&display=swap');
+
+  :root {
+    --bg: #0a0a0a;
+    --surface: #141414;
+    --border: #2a2a2a;
+    --accent: #e8ff00;
+    --accent2: #ff6b35;
+    --text: #f0f0f0;
+    --muted: #666;
+    --success: #00ff88;
+    --error: #ff3b5c;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 2rem 1rem;
+  }
+
+  header {
+    text-align: center;
+    margin-bottom: 3rem;
+  }
+
+  h1 {
+    font-family: 'Syne', sans-serif;
+    font-weight: 800;
+    font-size: clamp(1.8rem, 5vw, 2.8rem);
+    letter-spacing: -0.02em;
+    line-height: 1;
+    margin-bottom: 0.5rem;
+  }
+
+  h1 span { color: var(--accent); }
+
+  .subtitle {
+    color: var(--muted);
+    font-size: 0.75rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    padding: 1.5rem;
+    width: 100%;
+    max-width: 560px;
+    margin-bottom: 1rem;
+  }
+
+  .card-label {
+    font-size: 0.65rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .card-label::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  .btn {
+    display: inline-block;
+    padding: 0.75rem 1.5rem;
+    background: var(--accent);
+    color: #000;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 700;
+    font-size: 0.8rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    border: none;
+    border-radius: 2px;
+    cursor: pointer;
+    transition: opacity 0.15s, transform 0.1s;
+    width: 100%;
+  }
+
+  .btn:hover:not(:disabled) { opacity: 0.85; transform: translateY(-1px); }
+  .btn:active:not(:disabled) { transform: translateY(0); }
+  .btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  .btn.secondary {
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+
+  .btn.secondary:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+
+  .log {
+    font-size: 0.72rem;
+    line-height: 1.8;
+    color: var(--muted);
+    max-height: 280px;
+    overflow-y: auto;
+  }
+
+  .log-entry {
+    display: flex;
+    gap: 0.75rem;
+    padding: 0.15rem 0;
+    border-bottom: 1px solid #1a1a1a;
+    animation: fadeIn 0.2s ease;
+  }
+
+  @keyframes fadeIn { from { opacity: 0; transform: translateX(-4px); } to { opacity: 1; transform: none; } }
+
+  .log-time { color: var(--accent2); min-width: 70px; }
+  .log-msg { color: var(--text); }
+  .log-msg.success { color: var(--success); }
+  .log-msg.error { color: var(--error); }
+  .log-msg.highlight { color: var(--accent); font-weight: 700; }
+
+  .metric-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    margin-top: 1rem;
+  }
+
+  .metric {
+    background: var(--surface);
+    padding: 1rem;
+    text-align: center;
+  }
+
+  .metric-val {
+    font-family: 'Syne', sans-serif;
+    font-weight: 800;
+    font-size: 1.8rem;
+    color: var(--accent);
+    line-height: 1;
+    margin-bottom: 0.25rem;
+  }
+
+  .metric-val.pending { color: var(--muted); font-size: 1.2rem; }
+  .metric-label { font-size: 0.6rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+
+  video {
+    width: 100%;
+    border-radius: 2px;
+    background: #000;
+    display: block;
+  }
+
+  .video-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin-top: 0.75rem;
+  }
+
+  .video-label {
+    font-size: 0.6rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 0.4rem;
+    text-align: center;
+  }
+
+  .badge {
+    display: inline-block;
+    padding: 0.2rem 0.5rem;
+    font-size: 0.6rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    border-radius: 2px;
+    margin-left: 0.5rem;
+  }
+
+  .badge.webm { background: #1a2a3a; color: #4ab0ff; }
+  .badge.mp4  { background: #1a3a1a; color: var(--success); }
+
+  .status-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.7rem;
+    color: var(--muted);
+    margin-top: 0.75rem;
+  }
+
+  .dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--muted);
+  }
+  .dot.active { background: var(--accent); animation: pulse 1s infinite; }
+  .dot.success { background: var(--success); }
+  .dot.error { background: var(--error); }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; } 50% { opacity: 0.3; }
+  }
+
+  .device-info {
+    font-size: 0.65rem;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+
+  .device-info span { color: var(--text); }
+
+  progress {
+    width: 100%;
+    height: 3px;
+    appearance: none;
+    border: none;
+    background: var(--border);
+    border-radius: 0;
+    margin-top: 0.75rem;
+    display: none;
+  }
+  progress::-webkit-progress-bar { background: var(--border); }
+  progress::-webkit-progress-value { background: var(--accent); transition: width 0.3s; }
+  progress.visible { display: block; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>ffmpeg<span>.wasm</span></h1>
+  <p class="subtitle">Transcode Performance Test · WebM → MP4</p>
+</header>
+
+<!-- Device Info -->
+<div class="card">
+  <div class="card-label">Device</div>
+  <div class="device-info" id="deviceInfo">Detecting…</div>
+</div>
+
+<!-- Controls -->
+<div class="card">
+  <div class="card-label">Test</div>
+  <button class="btn" id="btnLoad" onclick="loadFFmpeg()">① Load ffmpeg.wasm</button>
+  <div class="status-bar">
+    <div class="dot" id="loadDot"></div>
+    <span id="loadStatus">Not loaded</span>
+  </div>
+  <progress id="loadProgress"></progress>
+</div>
+
+<div class="card">
+  <div class="card-label">Record &amp; Transcode</div>
+  <button class="btn" id="btnRecord" onclick="startTest()" disabled>② Record 1s clip &amp; transcode</button>
+  <div class="status-bar">
+    <div class="dot" id="recDot"></div>
+    <span id="recStatus">Waiting for ffmpeg</span>
+  </div>
+</div>
+
+<!-- Metrics -->
+<div class="card">
+  <div class="card-label">Results</div>
+  <div class="metric-grid">
+    <div class="metric">
+      <div class="metric-val pending" id="metLoad">—</div>
+      <div class="metric-label">Load time (s)</div>
+    </div>
+    <div class="metric">
+      <div class="metric-val pending" id="metTranscode">—</div>
+      <div class="metric-label">Transcode time (s)</div>
+    </div>
+    <div class="metric">
+      <div class="metric-val pending" id="metWebmSize">—</div>
+      <div class="metric-label">WebM size (KB)</div>
+    </div>
+    <div class="metric">
+      <div class="metric-val pending" id="metMp4Size">—</div>
+      <div class="metric-label">MP4 size (KB)</div>
+    </div>
+  </div>
+</div>
+
+<!-- Preview -->
+<div class="card" id="previewCard" style="display:none">
+  <div class="card-label">Preview</div>
+  <div class="video-row">
+    <div>
+      <div class="video-label">Source <span class="badge webm">webm</span></div>
+      <video id="vidWebm" autoplay loop muted playsinline></video>
+    </div>
+    <div>
+      <div class="video-label">Output <span class="badge mp4">mp4</span></div>
+      <video id="vidMp4" autoplay loop muted playsinline></video>
+    </div>
+  </div>
+  <div style="margin-top:1rem; display:flex; gap:0.5rem;">
+    <button class="btn secondary" onclick="downloadMp4()">↓ Download MP4</button>
+    <button class="btn secondary" onclick="startTest()">↺ Repeat test</button>
+  </div>
+</div>
+
+<!-- Log -->
+<div class="card">
+  <div class="card-label">Log</div>
+  <div class="log" id="log"></div>
+</div>
+
+<script>
+  // ── State ─────────────────────────────────────────────────────────────────
+  let ffmpeg = null;
+  let mp4Blob = null;
+  let loadStart = 0;
+  let transcodeStart = 0;
+
+  // ── Device info ───────────────────────────────────────────────────────────
+  (function() {
+    const ua = navigator.userAgent;
+    const isAndroid = /android/i.test(ua);
+    const isIOS = /iphone|ipad|ipod/i.test(ua);
+    const platform = isAndroid ? 'Android' : isIOS ? 'iOS' : 'Desktop/Other';
+    const cores = navigator.hardwareConcurrency || '?';
+    const mem = navigator.deviceMemory ? navigator.deviceMemory + ' GB' : '?';
+    const supported = typeof SharedArrayBuffer !== 'undefined';
+
+    document.getElementById('deviceInfo').innerHTML =
+      `Platform: <span>${platform}</span><br>` +
+      `User agent: <span style="word-break:break-all;font-size:0.6rem">${ua.substring(0,80)}…</span><br>` +
+      `CPU cores: <span>${cores}</span> · RAM: <span>${mem}</span><br>` +
+      `SharedArrayBuffer: <span style="color:${supported ? 'var(--success)' : 'var(--error)'}">${supported ? 'Available ✓' : 'Unavailable ✗ (may affect perf)'}</span>`;
+  })();
+
+  // ── Logging ───────────────────────────────────────────────────────────────
+  function log(msg, type = '') {
+    const t = performance.now();
+    const ts = (t / 1000).toFixed(2) + 's';
+    const el = document.createElement('div');
+    el.className = 'log-entry';
+    el.innerHTML = `<span class="log-time">${ts}</span><span class="log-msg ${type}">${msg}</span>`;
+    const logEl = document.getElementById('log');
+    logEl.appendChild(el);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function setStatus(dotId, statusId, dotClass, msg) {
+    const dot = document.getElementById(dotId);
+    dot.className = 'dot ' + dotClass;
+    document.getElementById(statusId).textContent = msg;
+  }
+
+  function setMetric(id, val) {
+    const el = document.getElementById(id);
+    el.textContent = val;
+    el.className = 'metric-val';
+  }
+
+  // ── Load ffmpeg.wasm ──────────────────────────────────────────────────────
+  async function loadFFmpeg() {
+    document.getElementById('btnLoad').disabled = true;
+    setStatus('loadDot', 'loadStatus', 'active', 'Loading…');
+    document.getElementById('loadProgress').classList.add('visible');
+    log('Starting ffmpeg.wasm load…');
+    loadStart = performance.now();
+
+    try {
+      // Dynamically import from CDN
+      const { createFFmpeg, fetchFile } = await import('https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js');
+      window._fetchFile = fetchFile;
+
+      ffmpeg = createFFmpeg({
+        log: false,
+        progress: ({ ratio }) => {
+          document.getElementById('loadProgress').value = ratio;
+        },
+        corePath: 'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js',
+      });
+
+      log('Fetching ffmpeg core (~30MB)…');
+      await ffmpeg.load();
+
+      const elapsed = ((performance.now() - loadStart) / 1000).toFixed(2);
+      setMetric('metLoad', elapsed);
+      setStatus('loadDot', 'loadStatus', 'success', `Loaded in ${elapsed}s`);
+      log(`ffmpeg.wasm ready in ${elapsed}s`, 'success');
+      document.getElementById('btnRecord').disabled = false;
+      document.getElementById('loadProgress').classList.remove('visible');
+
+    } catch (err) {
+      setStatus('loadDot', 'loadStatus', 'error', 'Failed');
+      log('Load error: ' + err.message, 'error');
+      document.getElementById('btnLoad').disabled = false;
+    }
+  }
+
+  // ── Record + transcode ────────────────────────────────────────────────────
+  async function startTest() {
+    document.getElementById('btnRecord').disabled = true;
+    document.getElementById('previewCard').style.display = 'none';
+    mp4Blob = null;
+
+    setStatus('recDot', 'recStatus', 'active', 'Requesting camera…');
+    log('Requesting camera access…');
+
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 640, height: 480, frameRate: 30 },
+        audio: false
+      });
+      log('Camera stream acquired');
+    } catch (err) {
+      setStatus('recDot', 'recStatus', 'error', 'Camera denied');
+      log('Camera error: ' + err.message, 'error');
+      document.getElementById('btnRecord').disabled = false;
+      return;
+    }
+
+    // Pick best available mimeType
+    const mimeTypes = [
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8',
+      'video/webm',
+      'video/mp4'
+    ];
+    const mimeType = mimeTypes.find(t => MediaRecorder.isTypeSupported(t)) || '';
+    log(`Using mimeType: ${mimeType || '(browser default)'}`);
+    setStatus('recDot', 'recStatus', 'active', 'Recording 1s…');
+
+    const chunks = [];
+    const recorder = new MediaRecorder(stream, {
+      mimeType: mimeType || undefined,
+      videoBitsPerSecond: 2_000_000
+    });
+
+    recorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+
+    await new Promise(resolve => {
+      recorder.onstop = resolve;
+      recorder.start();
+      setTimeout(() => recorder.stop(), 1000);
+    });
+
+    stream.getTracks().forEach(t => t.stop());
+    log('Recording complete');
+
+    const webmBlob = new Blob(chunks, { type: recorder.mimeType });
+    const webmSize = (webmBlob.size / 1024).toFixed(1);
+    setMetric('metWebmSize', webmSize);
+    log(`WebM blob: ${webmSize} KB`);
+
+    // Show WebM preview
+    const webmUrl = URL.createObjectURL(webmBlob);
+    const vidWebm = document.getElementById('vidWebm');
+    vidWebm.src = webmUrl;
+
+    // Transcode
+    setStatus('recDot', 'recStatus', 'active', 'Transcoding…');
+    log('Starting transcode: WebM → MP4…');
+    transcodeStart = performance.now();
+
+    try {
+      const inputData = await window._fetchFile(webmBlob);
+      ffmpeg.FS('writeFile', 'input.webm', inputData);
+
+      await ffmpeg.run(
+        '-i', 'input.webm',
+        '-c:v', 'libx264',
+        '-preset', 'ultrafast',
+        '-crf', '28',
+        '-movflags', '+faststart',
+        '-an',
+        'output.mp4'
+      );
+
+      const transcodeTime = ((performance.now() - transcodeStart) / 1000).toFixed(2);
+      setMetric('metTranscode', transcodeTime);
+
+      const data = ffmpeg.FS('readFile', 'output.mp4');
+      mp4Blob = new Blob([data.buffer], { type: 'video/mp4' });
+      const mp4Size = (mp4Blob.size / 1024).toFixed(1);
+      setMetric('metMp4Size', mp4Size);
+
+      // Cleanup FS
+      ffmpeg.FS('unlink', 'input.webm');
+      ffmpeg.FS('unlink', 'output.mp4');
+
+      const verdict = parseFloat(transcodeTime) < 1 ? '🟢 Fast — viable for sharing flow'
+                    : parseFloat(transcodeTime) < 3 ? '🟡 Acceptable — consider UX spinner'
+                    : '🔴 Slow — may frustrate users';
+
+      log(`Transcode complete in ${transcodeTime}s`, 'highlight');
+      log(verdict, parseFloat(transcodeTime) < 1 ? 'success' : parseFloat(transcodeTime) < 3 ? '' : 'error');
+      setStatus('recDot', 'recStatus', 'success', `Done in ${transcodeTime}s`);
+
+      // Show MP4 preview
+      const mp4Url = URL.createObjectURL(mp4Blob);
+      document.getElementById('vidMp4').src = mp4Url;
+      document.getElementById('previewCard').style.display = 'block';
+
+    } catch (err) {
+      const transcodeTime = ((performance.now() - transcodeStart) / 1000).toFixed(2);
+      setStatus('recDot', 'recStatus', 'error', 'Transcode failed');
+      log(`Transcode error after ${transcodeTime}s: ${err.message}`, 'error');
+    }
+
+    document.getElementById('btnRecord').disabled = false;
+  }
+
+  // ── Download ──────────────────────────────────────────────────────────────
+  function downloadMp4() {
+    if (!mp4Blob) return;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(mp4Blob);
+    a.download = 'test-output.mp4';
+    a.click();
+  }
+</script>
+</body>
+</html>
