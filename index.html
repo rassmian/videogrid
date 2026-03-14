@@ -247,6 +247,41 @@
   #title-mark .watermark-text {
     opacity: 0.35;
   }
+  #videogrid-trigger {
+    background: none;
+    border: none;
+    padding: 0;
+    margin: 0;
+    font: inherit;
+    font-size: 0.75rem;
+    font-weight: 300;
+    letter-spacing: 0.2em;
+    color: #fff;
+    opacity: 0.35;
+    cursor: pointer;
+    pointer-events: auto;
+    -webkit-tap-highlight-color: transparent;
+    outline: none;
+  }
+  #videogrid-trigger:hover,
+  #videogrid-trigger:active,
+  #videogrid-trigger:focus { opacity: 0.35; outline: none; box-shadow: none; }
+  #quality-badge {
+    display: none;
+    opacity: 0;
+    margin-left: 6px;
+    font-size: 0.65rem;
+    letter-spacing: 0.12em;
+    background: rgba(255,255,255,0.15);
+    border-radius: 3px;
+    padding: 1px 6px;
+    transition: opacity 0.3s;
+    pointer-events: none;
+  }
+  #quality-badge.visible {
+    display: inline;
+    opacity: 1;
+  }
 
   /* About overlay */
   #about-overlay {
@@ -463,7 +498,7 @@
   <div id="grid"></div>
 </div>
 
-<div id="title-mark"><span class="watermark-text">Videogrid &nbsp;·&nbsp; Beta v0.82 &nbsp;·&nbsp; </span><span id="about-trigger">About</span></div>
+<div id="title-mark"><button id="videogrid-trigger">Videogrid</button><span class="watermark-text"> &nbsp;·&nbsp; Beta v0.83-mp4 &nbsp;·&nbsp; </span><span id="about-trigger">About</span><span id="quality-badge"></span></div>
 
   <div id="about-overlay">
     <button id="about-close">&#x2715;</button>
@@ -503,6 +538,182 @@
   const COLS_DESKTOP = 5, ROWS_DESKTOP = 5;
   const COLS_MOBILE  = 3, ROWS_MOBILE  = 6;
   let currentCols, currentRows, totalCells;
+
+  // ── Device quality profiles ──────────────────────────────────────────────
+  const CACHE_KEY = 'vg_device_profile_v83';
+  const PROFILES = {
+    high: { camW:1280, camH:720,  camFps:30, recBps:2500000, expW:1600, expBps:6000000, expFps:30, minCanvasFps:27, maxEncMs:400 },
+    mid:  { camW:640,  camH:480,  camFps:30, recBps:1500000, expW:1200, expBps:4000000, expFps:25, minCanvasFps:22, maxEncMs:600 },
+    low:  { camW:320,  camH:240,  camFps:24, recBps:800000,  expW:800,  expBps:2000000, expFps:20, minCanvasFps:0,  maxEncMs:9999 }
+  };
+  const TIER_ORDER = ['high', 'mid', 'low'];
+  let deviceProfile = null; // set by runBenchmark()
+
+  // ── Benchmark ────────────────────────────────────────────────────────────
+  async function runBenchmark() {
+    // Desktop: hardcode High, no benchmark needed
+    const isMobileDev = /android|iphone|ipad|ipod/i.test(navigator.userAgent);
+    if (!isMobileDev) {
+      deviceProfile = { ...PROFILES.high, tier: 'high', outputFps: 30, mp4: true };
+      return;
+    }
+
+    // Check cache
+    try {
+      const cached = localStorage.getItem(CACHE_KEY);
+      if (cached) {
+        deviceProfile = JSON.parse(cached);
+        return;
+      }
+    } catch(e) {}
+
+    // Open a temporary benchmark stream at High settings
+    let benchStream;
+    try {
+      benchStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+        audio: false
+      });
+    } catch(e) {
+      // Can't open benchmark stream — fall back to Low without testing
+      deviceProfile = { ...PROFILES.low, tier: 'low', outputFps: 20, mp4: false };
+      return;
+    }
+
+    // MP4 runtime check
+    const mp4Ok = await checkMp4Runtime(benchStream);
+
+    // Iterative tier validation — start at High, step down until stable
+    let confirmedProfile = null;
+    for (const tier of TIER_ORDER) {
+      const p = PROFILES[tier];
+      const result = await validateTier(tier, p, benchStream);
+      if (result.pass) {
+        const outputFps = Math.max(20, Math.min(result.recordFps, result.canvasFps));
+        confirmedProfile = { ...p, tier, outputFps, mp4: mp4Ok };
+        break;
+      }
+    }
+
+    // Release benchmark stream before main stream opens
+    benchStream.getTracks().forEach(t => t.stop());
+
+    // Low always passes — this is a safety net
+    if (!confirmedProfile) {
+      confirmedProfile = { ...PROFILES.low, tier: 'low', outputFps: 20, mp4: mp4Ok };
+    }
+
+    deviceProfile = confirmedProfile;
+
+    // Cache result
+    try {
+      localStorage.setItem(CACHE_KEY, JSON.stringify(confirmedProfile));
+    } catch(e) {}
+  }
+
+  async function checkMp4Runtime(stream) {
+    // 300ms test clip — confirms MP4 produces real data at runtime
+    const mp4Type = 'video/mp4;codecs=avc1.42E01E';
+    if (!MediaRecorder.isTypeSupported(mp4Type)) return false;
+    return new Promise(resolve => {
+      let rec;
+      try { rec = new MediaRecorder(stream, { mimeType: mp4Type, videoBitsPerSecond: 500000 }); }
+      catch(e) { return resolve(false); }
+      const chunks = [];
+      rec.ondataavailable = e => { if (e.data?.size) chunks.push(e.data); };
+      rec.onstop = () => resolve(chunks.reduce((n, c) => n + c.size, 0) > 500);
+      rec.onerror = () => resolve(false);
+      try {
+        rec.start();
+        setTimeout(() => { try { rec.stop(); } catch(e) { resolve(false); } }, 300);
+      } catch(e) { resolve(false); }
+    });
+  }
+
+  async function validateTier(tier, profile, stream) {
+    // Step 1: recording speed & FPS test — two clips, take the better result
+    const results = [];
+    for (let i = 0; i < 2; i++) {
+      const r = await recordBenchmarkClip(profile, stream);
+      results.push(r);
+    }
+    const best = results.reduce((a, b) => a.encMs < b.encMs ? a : b);
+
+    if (best.encMs > profile.maxEncMs) return { pass: false };
+
+    // Step 2: canvas FPS test at this tier's export resolution
+    const canvasFps = await measureCanvasFps(profile);
+    if (canvasFps < profile.minCanvasFps) return { pass: false };
+
+    return { pass: true, recordFps: best.fps, canvasFps: Math.round(canvasFps), encMs: best.encMs };
+  }
+
+  async function recordBenchmarkClip(profile, stream) {
+    const mimeType = 'video/mp4;codecs=avc1.42E01E';
+    const useMime = MediaRecorder.isTypeSupported(mimeType) ? mimeType : 'video/webm;codecs=vp9';
+    return new Promise(resolve => {
+      let rec;
+      try { rec = new MediaRecorder(stream, { mimeType: useMime, videoBitsPerSecond: profile.recBps }); }
+      catch(e) { return resolve({ encMs: 9999, fps: 0 }); }
+      const chunks = [];
+      const t0 = performance.now();
+      let frameCount = 0;
+      let fpsStart = null;
+
+      // Count frames via requestVideoFrameCallback if available, else estimate
+      const trackSettings = stream.getVideoTracks()[0]?.getSettings();
+      const reportedFps = trackSettings?.frameRate || 30;
+
+      rec.ondataavailable = e => { if (e.data?.size) chunks.push(e.data); };
+      rec.onstop = () => {
+        const encMs = performance.now() - t0;
+        // Estimate actual FPS from blob existence and reported track FPS
+        const fps = chunks.reduce((n,c) => n + c.size, 0) > 500 ? Math.round(reportedFps) : 0;
+        resolve({ encMs: Math.round(encMs), fps });
+      };
+      rec.onerror = () => resolve({ encMs: 9999, fps: 0 });
+      try {
+        rec.start();
+        setTimeout(() => { try { rec.stop(); } catch(e) { resolve({ encMs: 9999, fps: 0 }); } }, 500);
+      } catch(e) { resolve({ encMs: 9999, fps: 0 }); }
+    });
+  }
+
+  async function measureCanvasFps(profile) {
+    // Simulate full mobile grid (3x6) canvas composite at profile export resolution
+    const cols = COLS_MOBILE, rows = ROWS_MOBILE;
+    const cellW = Math.round(profile.expW / cols);
+    const cellH = Math.round(cellW * (4/3));
+    const canvas = document.createElement('canvas');
+    canvas.width  = cellW * cols;
+    canvas.height = cellH * rows;
+    const ctx = canvas.getContext('2d', { alpha: false });
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    let frameCount = 0;
+    const testDuration = 1000;
+    const t0 = performance.now();
+
+    return new Promise(resolve => {
+      function frame(ts) {
+        // Simulate 18-cell composite draw
+        for (let i = 0; i < cols * rows; i++) {
+          const x = (i % cols) * cellW;
+          const y = Math.floor(i / cols) * cellH;
+          ctx.fillStyle = i % 2 === 0 ? '#f0f0f0' : '#e8e8e8';
+          ctx.fillRect(x, y, cellW, cellH);
+        }
+        frameCount++;
+        if (performance.now() - t0 < testDuration) {
+          requestAnimationFrame(frame);
+        } else {
+          resolve(frameCount);
+        }
+      }
+      requestAnimationFrame(frame);
+    });
+  }
   const cellCache = new Map(); // index → DOM element, populated once in buildGrid
   let pendingShare = null;     // { file, blobUrl, ext, ts } — avoids storing state on DOM
 
@@ -634,9 +845,22 @@
 
   // ── Permission & Start ──
   document.getElementById('start-btn').addEventListener('click', async () => {
+    const startBtn = document.getElementById('start-btn');
+    startBtn.textContent = 'Optimising for your device…';
+    startBtn.disabled = true;
     try {
+      // Run device benchmark (or load from cache) before opening main stream
+      await runBenchmark();
+
+      // Open main camera stream using confirmed device profile
+      const prof = deviceProfile || PROFILES.low;
       stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: currentFacing, width: { ideal: 320 }, height: { ideal: 240 } },
+        video: {
+          facingMode: currentFacing,
+          width:     { ideal: prof.camW },
+          height:    { ideal: prof.camH },
+          frameRate: { ideal: prof.camFps }
+        },
         audio: false
       });
       document.getElementById('permission-screen').style.display = 'none';
@@ -654,7 +878,7 @@
         });
       }
     } catch (err) {
-      document.getElementById('start-btn').style.display = 'none';
+      startBtn.style.display = 'none';
       document.getElementById('denied-msg').style.display = 'block';
     }
   });
@@ -667,8 +891,9 @@
     const tracks = stream.getVideoTracks();
     if (tracks.length === 0 || tracks[0].readyState === 'ended') {
       try {
+        const prof = deviceProfile || PROFILES.low;
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: currentFacing, width: { ideal: 320 }, height: { ideal: 240 } },
+          video: { facingMode: currentFacing, width: { ideal: prof.camW }, height: { ideal: prof.camH }, frameRate: { ideal: prof.camFps } },
           audio: false
         });
         return true;
@@ -760,7 +985,7 @@
     }
   }
 
-  function startRecording(index, liveFeed, existingVids) {
+  async function startRecording(index, liveFeed, existingVids) {
     const cell = getCell(index);
     const rec = cell.querySelector('.rec-indicator');
     rec.classList.add('show');
@@ -769,7 +994,9 @@
     const chunks = [];
     let recorder;
     try {
-      recorder = new MediaRecorder(stream, { mimeType: getSupportedMimeType(/android/i.test(navigator.userAgent)), videoBitsPerSecond: 500000 });
+      // Runtime MP4 validation runs on first record; result cached for subsequent clips.
+      await validateMp4Runtime(stream);
+      recorder = new MediaRecorder(stream, { mimeType: getSupportedMimeType(), videoBitsPerSecond: (deviceProfile || PROFILES.low).recBps });
     } catch(e) {
       recorder = new MediaRecorder(stream);
     }
@@ -846,6 +1073,19 @@
 
   // ── About overlay ──
   const aboutOverlay = document.getElementById('about-overlay');
+  // Tapping Videogrid reveals quality tier briefly
+  document.getElementById('videogrid-trigger').addEventListener('click', () => {
+    if (deviceProfile) {
+      const badge = document.getElementById('quality-badge');
+      const tier = deviceProfile.tier.toUpperCase();
+      const fps = deviceProfile.outputFps + 'fps';
+      const res = deviceProfile.camW + 'p';
+      badge.textContent = tier + ' · ' + res + ' · ' + fps;
+      badge.classList.add('visible');
+      clearTimeout(badge._hideTimer);
+      badge._hideTimer = setTimeout(() => badge.classList.remove('visible'), 3000);
+    }
+  });
   document.getElementById('about-trigger').addEventListener('click', () => {
     aboutOverlay.classList.add('visible');
   });
@@ -894,13 +1134,44 @@
   // window.focus catches some iOS cases visibilitychange misses
   window.addEventListener('focus', onPageResume);
 
-  function getSupportedMimeType(forceWebm) {
-    // Android Chrome may report mp4 as supported but fails at runtime — force webm.
-    // iOS Safari needs mp4 for share sheet compatibility.
-    // avc1.42E01E = H.264 Baseline Profile Level 3.0 — required for Photos "Save Video".
-    const types = forceWebm
-      ? ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
-      : ['video/mp4;codecs=avc1.42E01E', 'video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+  // Cached result of runtime MP4 validation (null = not yet tested)
+  let _mp4RuntimeOk = null;
+
+  async function validateMp4Runtime(stream) {
+    // Quick 300ms test clip to confirm MP4 actually produces data at runtime.
+    // Catches older Android Chrome that passes isTypeSupported() but produces nothing.
+    if (_mp4RuntimeOk !== null) return _mp4RuntimeOk;
+    const mp4Type = 'video/mp4;codecs=avc1.42E01E';
+    if (!MediaRecorder.isTypeSupported(mp4Type)) { _mp4RuntimeOk = false; return false; }
+    return new Promise(resolve => {
+      let rec;
+      try { rec = new MediaRecorder(stream, { mimeType: mp4Type, videoBitsPerSecond: 500000 }); }
+      catch(e) { _mp4RuntimeOk = false; return resolve(false); }
+      const chunks = [];
+      rec.ondataavailable = e => { if (e.data?.size) chunks.push(e.data); };
+      rec.onstop = () => {
+        const ok = chunks.reduce((n, c) => n + c.size, 0) > 500;
+        _mp4RuntimeOk = ok;
+        resolve(ok);
+      };
+      rec.onerror = () => { _mp4RuntimeOk = false; resolve(false); };
+      try { rec.start(); setTimeout(() => { try { rec.stop(); } catch(e) { _mp4RuntimeOk = false; resolve(false); } }, 300); }
+      catch(e) { _mp4RuntimeOk = false; resolve(false); }
+    });
+  }
+
+  function getSupportedMimeType() {
+    // MP4 first on all platforms — modern Android Chrome (113+) supports it reliably.
+    // WebM retained as fallback for older devices.
+    // avc1.42E01E = H.264 Baseline Profile Level 3.0 — required for iOS Photos "Save Video".
+    const types = [
+      'video/mp4;codecs=avc1.42E01E',
+      'video/mp4;codecs=avc1',
+      'video/mp4',
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8',
+      'video/webm'
+    ];
     for (const t of types) {
       if (MediaRecorder.isTypeSupported(t)) return t;
     }
@@ -1032,16 +1303,18 @@
     currentFacing = currentFacing === 'user' ? 'environment' : 'user';
     if (stream) stream.getTracks().forEach(t => t.stop());
     try {
+      const prof = deviceProfile || PROFILES.low;
       stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: currentFacing, width: { ideal: 320 }, height: { ideal: 240 } },
+        video: { facingMode: currentFacing, width: { ideal: prof.camW }, height: { ideal: prof.camH }, frameRate: { ideal: prof.camFps } },
         audio: false
       });
     } catch(e) {
       // Roll back if new camera unavailable
       currentFacing = currentFacing === 'user' ? 'environment' : 'user';
       try {
+        const prof = deviceProfile || PROFILES.low;
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: currentFacing, width: { ideal: 320 }, height: { ideal: 240 } },
+          video: { facingMode: currentFacing, width: { ideal: prof.camW }, height: { ideal: prof.camH }, frameRate: { ideal: prof.camFps } },
           audio: false
         });
       } catch(e2) {
@@ -1081,7 +1354,11 @@
           URL.revokeObjectURL(blobUrl);
           return;
         } catch(err) {
+          // AbortError = user dismissed share sheet — that's fine
           if (err.name === 'AbortError') { URL.revokeObjectURL(blobUrl); return; }
+          // Show error on screen so we can debug without DevTools
+          showToast('Share error: ' + err.name + ' — ' + err.message);
+          // Fall through to download
         }
       }
 
@@ -1107,7 +1384,7 @@
     // pure overhead with no quality gain. Matching canvas size cuts compositing
     // work by ~3× on iOS and removes the main cause of export stutter.
     const isAndroid = /android/i.test(navigator.userAgent);
-    const exportWidth = 800;
+    const exportWidth = (deviceProfile || PROFILES.low).expW;
     const exportCellW = Math.round(exportWidth / currentCols);
     const exportCellH = Math.round(exportCellW * (cellRect.height / cellRect.width));
     const cellW = exportCellW;
@@ -1119,7 +1396,7 @@
     // compositing on every drawImage call, free performance hint
     const ctx = canvas.getContext('2d', { alpha: false });
     // Pre-fill dark so first exported frame isn't blank if videos aren't ready yet
-    ctx.fillStyle = '#111';
+    ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     // Suspend loop — videos use loop=true as native fallback during export
@@ -1160,7 +1437,7 @@
     // causing uneven gaps and lower actual fps. Confirmed by frame analysis.
     // The live grid stutter does NOT occur during export — only in onstop —
     // so rAF here is the right choice and does not affect the live grid.
-    const EXPORT_FPS = 15;
+    const EXPORT_FPS = (deviceProfile || PROFILES.low).outputFps;
     const EXPORT_FRAME_MS = 1000 / EXPORT_FPS;
     let rafId;
     let startTime = null;
@@ -1194,7 +1471,7 @@
             }
           } else if (!state) {
             // Genuinely empty cell — fill dark
-            ctx.fillStyle = '#111';
+            ctx.fillStyle = '#ffffff';
             ctx.fillRect(x, y, cellW, cellH);
           }
           // state exists but readyState < 2: skip — canvas retains previous frame
@@ -1211,12 +1488,12 @@
       const canvasStream = canvas.captureStream(0);
       exportTrack = canvasStream.getVideoTracks()[0];
       let shareRecorder;
-      const shareMimeType = getSupportedMimeType(isAndroid);
+      const shareMimeType = getSupportedMimeType();
       try {
         // iOS: 1200kbps — source is 320×240 upscaled, higher bitrates cause the h264
         // encoder to block the main thread more aggressively, worsening frame timing.
         // Android: 2000kbps — vp9 encodes off-main-thread so higher bitrate is safe.
-        shareRecorder = new MediaRecorder(canvasStream, { mimeType: shareMimeType, videoBitsPerSecond: isAndroid ? 2000000 : 1200000 });
+        shareRecorder = new MediaRecorder(canvasStream, { mimeType: shareMimeType, videoBitsPerSecond: (deviceProfile || PROFILES.low).expBps });
       } catch(e) {
         // If explicit mimeType constructor fails, try without bitrate constraint but keep mimeType
         try {
@@ -1314,27 +1591,24 @@
     btn.textContent = 'Share grid';
     btn.disabled = false;
 
-    // Detect whether this device can meaningfully share a video file.
-    // Android Chrome reports navigator.share but rejects video files silently
-    // because webm has no share targets. Detect Android and use download instead.
+    // Android: download directly — web share API unreliable for video files.
+    // iOS: two-step gesture flow via native share sheet.
+    // Desktop: plain download.
     // (isAndroid already declared above for canvas sizing)
 
-    const blobUrl = URL.createObjectURL(file);
-    const ext = file.name.endsWith('mp4') ? 'mp4' : 'webm';
+    // Normalise MIME type — strip codec string so Android canShare() accepts it.
+    // e.g. 'video/mp4;codecs=avc1.42E01E' → 'video/mp4'
+    const ext = file.type.includes('mp4') ? 'mp4' : 'webm';
+    const cleanMime = ext === 'mp4' ? 'video/mp4' : 'video/webm';
+    const cleanFile = new File([file], `videogrid-${ts}.${ext}`, { type: cleanMime });
+    const blobUrl = URL.createObjectURL(cleanFile);
 
-    if (isAndroid) {
-      // Android: download directly and tell user what to do
-      triggerDownload(blobUrl, ext, ts);
-      setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
-      showToast('Saved to downloads — share from your gallery');
-      btn.textContent = 'Share grid';
-      btn.disabled = false;
-    } else if (navigator.share) {
+    if (navigator.share) {
       // iOS and other platforms with working share API: two-step gesture flow
       btn.textContent = 'Tap to share';
       btn.disabled = false;
       btn.classList.add('ready');
-      pendingShare = { file, blobUrl, ext, ts };
+      pendingShare = { file: cleanFile, blobUrl, ext, ts };
       // Haptic pulse to signal the button is ready
       if (navigator.vibrate) navigator.vibrate(200);
     } else {
